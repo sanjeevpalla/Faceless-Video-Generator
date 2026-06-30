@@ -30,6 +30,7 @@ import {
   InfoOutlined as InfoIcon,
 } from "@mui/icons-material";
 import { useProjectStore } from "../store";
+import { useAppStore } from "../store/appStore";
 import { useProjectClips, useAnimateScene, WAN2_KEYS } from "../hooks/useWan2";
 import { useComfyUIStatus } from "../hooks/useImages";
 import { wan2Api, SceneClipInfo } from "../api/wan2";
@@ -437,8 +438,12 @@ export default function ClipsPage() {
           ? undefined
           : Array.from(ltxSceneIds);
       await wan2Api.animateAll(currentProject.id, selectedIds);
-    } catch (err) {
+      // Optimistically mark as running so the button disables immediately
+      useProjectStore.getState().updateProgress("wan2", { status: "running", progress: 0 });
+    } catch (err: any) {
       console.error("Failed to trigger animation:", err);
+      const msg = err?.response?.data?.detail ?? err?.message ?? "Failed to start animation";
+      useAppStore.getState().addNotification({ type: "error", title: "Animation failed to start", message: msg });
     } finally {
       setAnimating(false);
     }

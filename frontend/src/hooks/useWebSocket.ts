@@ -291,6 +291,11 @@ export function useWebSocket({
                 progress: Number(j.progress ?? 0),
                 status: String(j.status ?? "running"),
               });
+              // Sync generationProgress so isRunning checks on each page work correctly
+              updateProgress(toStoreKey(jtype) as any, {
+                status: "running",
+                progress: Number(j.progress ?? 0),
+              });
             }
           }
           break;

@@ -55,8 +55,8 @@ class LTXComfyService(BaseService):
 
     # Poll-timeout controls: subclasses can override.
     # timeout = max(_CLIP_TIMEOUT_MIN, frames * _CLIP_TIMEOUT_MULT)
-    _CLIP_TIMEOUT_MIN: int = 900   # baseline seconds per clip (15 min)
-    _CLIP_TIMEOUT_MULT: int = 4    # extra seconds per frame
+    _CLIP_TIMEOUT_MIN: int = 300   # baseline seconds per clip (5 min — sufficient for RTX 5060 Ti 8-step)
+    _CLIP_TIMEOUT_MULT: int = 3    # extra seconds per frame
 
     def __init__(
         self,
@@ -382,17 +382,46 @@ class LTXComfyService(BaseService):
             raise ServiceError(self.service_name, f"ComfyUI /prompt returned no prompt_id: {data}")
         return prompt_id
 
+    async def _cancel_comfyui_job(self, job_id: str) -> None:
+        """Ask ComfyUI to cancel a pending/running prompt. Best-effort — never raises."""
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(
+                    f"{self.comfyui_url}/queue",
+                    json={"delete": [job_id]},
+                )
+        except Exception as exc:
+            self.logger.warning(f"Could not cancel ComfyUI job {job_id}: {exc}")
+
     async def _poll_job(self, job_id: str, timeout: int = 900, poll_interval: float = 3.0) -> str:
         """Poll /history/{job_id} until complete; return the video download URL."""
         deadline = time.monotonic() + timeout
+        start = time.monotonic()
+        heartbeat_interval = 15.0  # emit a progress log every N seconds
+        last_heartbeat = start
+
         async with httpx.AsyncClient(timeout=15.0) as client:
             while True:
-                if time.monotonic() > deadline:
+                now = time.monotonic()
+                elapsed = now - start
+
+                if now > deadline:
+                    await self._cancel_comfyui_job(job_id)
                     raise ServiceError(
                         self.service_name,
-                        f"ComfyUI job {job_id} timed out after {timeout}s",
+                        f"ComfyUI job {job_id} timed out after {timeout}s — cancelled",
                     )
+
                 await self.check_cancelled()
+
+                # Heartbeat: log every 15 s so the LiveLogPanel shows the job is alive
+                if now - last_heartbeat >= heartbeat_interval:
+                    remaining = max(0, int(deadline - now))
+                    self.logger.info(
+                        f"ComfyUI job {job_id}: rendering… {elapsed:.0f}s elapsed "
+                        f"(timeout in {remaining}s)"
+                    )
+                    last_heartbeat = now
 
                 r = await client.get(f"{self.comfyui_url}/history/{job_id}")
                 r.raise_for_status()
@@ -719,9 +748,9 @@ class AiNewsLTXService(LTXComfyService):
 
     service_name = "ai_news_ltx"
 
-    # Tighter timeouts: 768×512 distilled (8 steps) on RTX 5060 Ti ≤ 10 min
-    _CLIP_TIMEOUT_MIN: int = 600   # 10 min minimum (covers cold model-load)
-    _CLIP_TIMEOUT_MULT: int = 3    # 3 s/frame instead of 4 s/frame
+    # Tighter timeouts: 768×512 distilled (8 steps) on RTX 5060 Ti ≤ 5 min
+    _CLIP_TIMEOUT_MIN: int = 300   # 5 min minimum (covers cold model-load)
+    _CLIP_TIMEOUT_MULT: int = 2    # 2 s/frame for the smaller 768×512 resolution
 
     @staticmethod
     def _section_sort_key(label: str) -> tuple:
