@@ -1,0 +1,29 @@
+[package]
+name = "faceless-video-generator"
+version = "1.0.0"
+description = "Faceless Video Generator - AI-powered video creation desktop app"
+authors = ["Faceless Video Generator"]
+license = "MIT"
+repository = ""
+default-run = "faceless-video-generator"
+edition = "2021"
+rust-version = "1.70"
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+tauri = { version = "1.7", features = [ "dialog-all", "http-request",
+  "shell-open",
+  "fs-read-file",
+  "fs-write-file",
+  "fs-read-dir",
+  "path-all",
+  "window-all"
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

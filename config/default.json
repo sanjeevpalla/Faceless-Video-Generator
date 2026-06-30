@@ -1,0 +1,35 @@
+{
+  "_comment": "Faceless Video Generator - Default Configuration",
+  "_version": "1.0.0",
+
+  "COMFYUI_URL": "http://127.0.0.1:8188",
+  "PIPER_MODEL_PATH": "",
+  "PIPER_EXECUTABLE": "piper",
+  "WHISPER_MODEL": "base",
+  "WHISPER_LANGUAGE": "en",
+  "WHISPER_DEVICE": "cpu",
+
+  "VIDEO_FPS": 30,
+  "VIDEO_RESOLUTION": "1920x1080",
+  "VIDEO_CODEC": "libx264",
+  "AUDIO_CODEC": "aac",
+  "VIDEO_BITRATE": "8000k",
+  "AUDIO_BITRATE": "192k",
+
+  "FLUX_STEPS": 20,
+  "FLUX_CFG": 7.0,
+  "FLUX_SAMPLER": "euler",
+  "FLUX_SCHEDULER": "normal",
+  "FLUX_WIDTH": 1920,
+  "FLUX_HEIGHT": 1080,
+
+  "ZOOM_AMOUNT": 0.05,
+  "TRANSITION_DURATION": 0.5,
+
+  "MAX_CONCURRENT_JOBS": 1,
+  "JOB_TIMEOUT": 3600,
+
+  "DEBUG": false,
+  "HOST": "127.0.0.1",
+  "PORT": 8000
+}

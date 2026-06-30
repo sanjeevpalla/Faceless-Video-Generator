@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+/frontend/node_modules/
+
+# Rust/Tauri build files
+src-tauri/target/
+
+# Python caching and environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+ENV/
+env/
+
+# Databases and SQLite temp files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Logs and outputs
+logs/
+output/
+temp/
+/projects/
+narrator/
+.claude/

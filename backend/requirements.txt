@@ -1,0 +1,51 @@
+# Web Framework
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+
+# Database
+sqlalchemy[asyncio]==2.0.30
+aiosqlite==0.20.0
+
+# Validation & Settings
+pydantic==2.7.1
+pydantic-settings==2.2.1
+
+# File uploads & async I/O
+python-multipart==0.0.9
+aiofiles==23.2.1
+
+# HTTP client (ComfyUI integration)
+httpx==0.27.0
+
+# Video processing
+# NOTE: ffmpeg binary must be installed system-wide and on PATH
+moviepy==1.0.3
+
+# Image processing
+Pillow==10.3.0
+numpy==1.26.4
+opencv-python==4.9.0.80
+
+# AI background removal (narrator clips — rembg u2netp model)
+rembg==2.0.59
+
+# Subtitle generation (local Whisper)
+openai-whisper==20231117
+
+# Voice generation
+# NOTE: piper binary must be installed and on PATH (https://github.com/rhasspy/piper)
+# NOTE: download a voice model .onnx file and configure in Settings
+
+# Translation (free Google Translate via deep-translator, no API key needed)
+deep-translator==1.11.4
+
+# Gemini AI (content generation pipeline)
+google-genai>=1.0.0
+
+# Utilities
+websockets==12.0
+
+# Testing (install separately for development)
+pytest>=8.2.0
+pytest-asyncio>=0.23.7
+pytest-cov>=5.0.0
