@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api import projects, settings, jobs, ws, logs, images, voice, subtitles, video, queue, thumbnail, metadata, wan2, services, narrator, shorts, content, ai_news
+from app.api import projects, settings, jobs, ws, logs, images, voice, subtitles, video, queue, thumbnail, metadata, wan2, services, narrator, shorts, content, ai_news, pipeline
 
 api_router = APIRouter()
 
@@ -21,3 +21,4 @@ api_router.include_router(narrator.router, prefix="/narrator", tags=["narrator"]
 api_router.include_router(shorts.router, prefix="/shorts", tags=["shorts"])
 api_router.include_router(content.router, prefix="/content", tags=["content"])
 api_router.include_router(ai_news.router, prefix="/ai-news", tags=["ai-news"])
+api_router.include_router(pipeline.router, prefix="/pipeline", tags=["pipeline"])

@@ -42,6 +42,27 @@ export interface Project {
   resume_state: Record<string, unknown>;
 }
 
+export interface PipelineStepState {
+  stepName: string;
+  stepLabel: string;
+  stepIndex: number;
+  totalSteps: number;
+}
+
+export interface PipelineRunState {
+  status: "idle" | "running" | "completed" | "failed";
+  progress: number;
+  currentStep: PipelineStepState | null;
+  error?: string;
+  jobId?: string;
+}
+
+const defaultPipelineState = (): PipelineRunState => ({
+  status: "idle",
+  progress: 0,
+  currentStep: null,
+});
+
 export interface ContentStepState {
   status: "idle" | "running" | "done" | "error";
   content: string;
@@ -94,6 +115,9 @@ interface ProjectStore {
   generationProgress: ProgressState;
   contentGenState: ContentGenState;
 
+  /** Pipeline orchestration state (single-click generation). */
+  pipelineState: PipelineRunState;
+
   /** Scene IDs marked for LTX-Video clip generation (empty = not yet initialised = all LTX). */
   ltxSceneIds: Set<number>;
 
@@ -108,6 +132,8 @@ interface ProjectStore {
   toggleLtxSceneId: (id: number) => void;
   updateContentState: (patch: Partial<ContentGenState>) => void;
   resetContentState: () => void;
+  updatePipelineState: (patch: Partial<PipelineRunState>) => void;
+  resetPipelineState: () => void;
 }
 
 export const useProjectStore = create<ProjectStore>()(
@@ -119,6 +145,7 @@ export const useProjectStore = create<ProjectStore>()(
         selectedSceneId: null,
         generationProgress: defaultProgressState(),
         contentGenState: defaultContentState(),
+        pipelineState: defaultPipelineState(),
         ltxSceneIds: new Set<number>(),
 
         setCurrentProject: (project) =>
@@ -173,6 +200,11 @@ export const useProjectStore = create<ProjectStore>()(
         })),
 
       resetContentState: () => set({ contentGenState: defaultContentState() }),
+
+      updatePipelineState: (patch) =>
+        set((state) => ({ pipelineState: { ...state.pipelineState, ...patch } })),
+
+      resetPipelineState: () => set({ pipelineState: defaultPipelineState() }),
 
       setLtxSceneIds: (ids) => set({ ltxSceneIds: ids }),
 

@@ -17,6 +17,7 @@ class JobType(str, PyEnum):
     THUMBNAIL = "thumbnail"
     METADATA = "metadata"
     WAN2 = "wan2"
+    PIPELINE = "pipeline"
 
 
 class JobStatus(str, PyEnum):

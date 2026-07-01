@@ -28,6 +28,7 @@ interface AppStore {
   sidebarOpen: boolean;
   activeJobs: Record<string, ActiveJob>;
   theme: "dark" | "light";
+  singleClickEnabled: boolean;
 
   // Actions
   setWsConnected: (connected: boolean) => void;
@@ -40,6 +41,7 @@ interface AppStore {
   setActiveJob: (job: ActiveJob) => void;
   removeActiveJob: (jobId: string) => void;
   updateActiveJob: (jobId: string, update: Partial<ActiveJob>) => void;
+  setSingleClickEnabled: (enabled: boolean) => void;
 }
 
 let notifCounter = 0;
@@ -52,6 +54,7 @@ export const useAppStore = create<AppStore>()(
       sidebarOpen: true,
       activeJobs: {},
       theme: "dark",
+      singleClickEnabled: false,
 
       setWsConnected: (connected) => set({ wsConnected: connected }),
 
@@ -109,6 +112,8 @@ export const useAppStore = create<AppStore>()(
             [jobId]: { ...state.activeJobs[jobId], ...update },
           },
         })),
+
+      setSingleClickEnabled: (enabled) => set({ singleClickEnabled: enabled }),
     }),
     { name: "AppStore" }
   )

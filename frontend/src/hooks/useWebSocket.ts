@@ -48,6 +48,8 @@ export function useWebSocket({
 
   const setWsConnected = useAppStore((s) => s.setWsConnected);
   const updateProgress = useProjectStore((s) => s.updateProgress);
+  const updatePipelineState = useProjectStore((s) => s.updatePipelineState);
+  const resetPipelineState = useProjectStore((s) => s.resetPipelineState);
   const setActiveJob = useAppStore((s) => s.setActiveJob);
   const removeActiveJob = useAppStore((s) => s.removeActiveJob);
   const addNotification = useAppStore((s) => s.addNotification);
@@ -271,6 +273,74 @@ export function useWebSocket({
         }
 
         // ── Queue / system ────────────────────────────────────────────
+        // ── Pipeline events ───────────────────────────────────────
+        case "pipeline_step_started": {
+          updatePipelineState({
+            status: "running",
+            currentStep: {
+              stepName: String(data.step_name ?? ""),
+              stepLabel: String(data.step_label ?? ""),
+              stepIndex: Number(data.step_index ?? 0),
+              totalSteps: Number(data.total_steps ?? 1),
+            },
+          });
+          break;
+        }
+
+        case "pipeline_step_completed": {
+          const pctDone =
+            ((Number(data.step_index ?? 0) + 1) / Math.max(Number(data.total_steps ?? 1), 1)) * 100;
+          updatePipelineState({ progress: pctDone });
+          // Invalidate all caches so UI reflects step output immediately
+          invalidateImages();
+          invalidateVoice();
+          invalidateSubtitles();
+          invalidateVideo();
+          invalidateClips();
+          invalidateAiNewsSections();
+          break;
+        }
+
+        case "pipeline_step_failed": {
+          updatePipelineState({
+            status: "failed",
+            error: String(data.error ?? "Step failed"),
+          });
+          addNotification({
+            type: "error",
+            title: `Pipeline step failed: ${String(data.step_label ?? "")}`,
+            message: String(data.error ?? "").slice(0, 120),
+          });
+          break;
+        }
+
+        case "pipeline_completed": {
+          updatePipelineState({ status: "completed", progress: 100, currentStep: null });
+          if (job_id) removeActiveJob(String(job_id));
+          addNotification({
+            type: "success",
+            title: "Pipeline completed",
+            message: `All ${String(data.total_steps ?? "")} steps finished successfully`,
+          });
+          queryClient.invalidateQueries({ queryKey: QUEUE_KEYS.status() });
+          break;
+        }
+
+        case "pipeline_failed": {
+          updatePipelineState({
+            status: "failed",
+            error: String(data.error ?? "Pipeline failed"),
+          });
+          if (job_id) removeActiveJob(String(job_id));
+          addNotification({
+            type: "error",
+            title: "Pipeline failed",
+            message: String(data.error ?? "").slice(0, 120),
+          });
+          queryClient.invalidateQueries({ queryKey: QUEUE_KEYS.status() });
+          break;
+        }
+
         case "queue_updated": {
           queryClient.invalidateQueries({ queryKey: QUEUE_KEYS.status() });
           queryClient.invalidateQueries({ queryKey: QUEUE_KEYS.jobs() });
@@ -309,6 +379,8 @@ export function useWebSocket({
     [
       projectId,
       updateProgress,
+      updatePipelineState,
+      resetPipelineState,
       setActiveJob,
       removeActiveJob,
       addNotification,

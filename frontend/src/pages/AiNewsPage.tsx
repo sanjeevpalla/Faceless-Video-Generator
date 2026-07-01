@@ -19,7 +19,9 @@ import {
 } from "@mui/icons-material";
 import { useNavigate } from "react-router-dom";
 import { useProjectStore } from "../store";
+import { useAppStore } from "../store/appStore";
 import { useProject } from "../hooks/useProjects";
+import { pipelineApi } from "../api/pipeline";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { aiNewsApi, NewsStory } from "../api/aiNews";
 
@@ -131,7 +133,10 @@ function StoryCard({
 
 export default function AiNewsPage() {
   const navigate = useNavigate();
-  const currentProject = useProjectStore((s) => s.currentProject);
+  const currentProject     = useProjectStore((s) => s.currentProject);
+  const updatePipelineState = useProjectStore((s) => s.updatePipelineState);
+  const singleClickEnabled  = useAppStore((s) => s.singleClickEnabled);
+  const addNotification     = useAppStore((s) => s.addNotification);
   const { data: project, refetch } = useProject(currentProject?.id);
 
   const [stories, setStories] = useState<NewsStory[]>(Array.from({ length: 10 }, () => ({ title: "", summary: "" })));
@@ -220,6 +225,24 @@ export default function AiNewsPage() {
 
   const handleFetchAndGenerate = async () => {
     if (!currentProject?.id) return;
+
+    // Single Click Generation: run full AI News pipeline
+    if (singleClickEnabled) {
+      setScrapeStatus("loading");
+      setScrapeError("");
+      try {
+        const res = await pipelineApi.run(currentProject.id, true);
+        updatePipelineState({ status: "running", progress: 0, currentStep: null, jobId: res.job_id });
+        setScrapeStatus("done");
+        addNotification({ type: "info", title: "Full AI News pipeline started", message: "All steps will run automatically. Track progress via live logs." });
+      } catch (err: any) {
+        setScrapeStatus("error");
+        setScrapeError(err?.response?.data?.detail ?? err?.message ?? "Failed to start pipeline");
+        addNotification({ type: "error", title: "Pipeline failed to start", message: err?.response?.data?.detail ?? err?.message });
+      }
+      return;
+    }
+
     // Step 1: fetch stories
     setScrapeStatus("loading");
     setScrapeError("");

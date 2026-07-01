@@ -33,6 +33,8 @@ import {
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useProjectStore, ContentStepState } from "../store/projectStore";
+import { useAppStore } from "../store/appStore";
+import { pipelineApi } from "../api/pipeline";
 import { contentApi } from "../api/content";
 import { aiNewsApi } from "../api/aiNews";
 import { useWebSocket } from "../hooks/useWebSocket";
@@ -404,6 +406,9 @@ export default function ContentGenPage() {
   const currentProject = useProjectStore((s) => s.currentProject);
   const cs = useProjectStore((s) => s.contentGenState);
   const update = useProjectStore((s) => s.updateContentState);
+  const updatePipelineState = useProjectStore((s) => s.updatePipelineState);
+  const singleClickEnabled  = useAppStore((s) => s.singleClickEnabled);
+  const addNotification     = useAppStore((s) => s.addNotification);
 
   const pid = currentProject?.id ?? "";
   const isAiNews = currentProject?.project_type === "ai_news";
@@ -480,6 +485,23 @@ export default function ContentGenPage() {
   // ── Per-step run handlers ────────────────────────────────────────────────────
 
   const run = async (key: StepKey) => {
+    // Single Click Generation: intercept Research button and run full pipeline instead
+    if (key === "research" && singleClickEnabled && !isAiNews) {
+      if (!cs.topic.trim()) { setStep(key, { status: "error", error: "Enter a topic first." }); return; }
+      setStep(key, { status: "running", content: "", error: undefined });
+      try {
+        const res = await pipelineApi.run(pid, true);
+        updatePipelineState({ status: "running", progress: 0, currentStep: null, jobId: res.job_id });
+        addNotification({ type: "info", title: "Full pipeline started", message: "All steps will run automatically. Track progress via live logs." });
+        setStep(key, { status: "done", content: "Pipeline running — all steps will complete automatically." });
+      } catch (err: any) {
+        const msg = err?.response?.data?.detail ?? err?.message ?? "Failed to start pipeline";
+        setStep(key, { status: "error", error: msg });
+        addNotification({ type: "error", title: "Pipeline failed to start", message: msg });
+      }
+      return;
+    }
+
     setStep(key, { status: "running", content: "", error: undefined });
     try {
       let text = "";

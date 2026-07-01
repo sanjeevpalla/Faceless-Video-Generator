@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import {
   Box,
   Typography,
@@ -41,10 +41,14 @@ import {
   VisibilityOff as HideIcon,
   ImageSearch as ImageBackendIcon,
   Cloud as CloudIcon,
+  Bolt as PipelineIcon,
 } from "@mui/icons-material";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { narratorApi } from "../api/narrator";
 import { settingsApi, AppSettings, GoogleTTSSettings, SettingsUpdate, GeminiImageModel } from "../api/settings";
+import { useAppStore } from "../store/appStore";
+import { servicesApi } from "../api/services";
+import { imagesApi } from "../api/images";
 
 const SAMPLERS = ["euler", "euler_ancestral", "heun", "dpm_2", "dpm_2_ancestral", "lms", "dpm_fast", "dpm_adaptive"];
 const GOOGLE_TTS_VOICES = [
@@ -83,6 +87,68 @@ export default function SettingsPage() {
     mutationFn: settingsApi.reset,
     onSuccess: () => refetch(),
   });
+
+  // ── Single-click generation toggle ───────────────────────────────────────
+  const singleClickEnabled    = useAppStore((s) => s.singleClickEnabled);
+  const setSingleClickEnabled = useAppStore((s) => s.setSingleClickEnabled);
+  const addNotification       = useAppStore((s) => s.addNotification);
+  const [comfyuiStatus, setComfyuiStatus] = useState<"unknown" | "online" | "offline">("unknown");
+  const [comfyuiLoading, setComfyuiLoading] = useState(false);
+
+  const checkComfyui = useCallback(async (): Promise<boolean> => {
+    try {
+      const s = await imagesApi.comfyuiStatus();
+      const online = s.online === true;
+      setComfyuiStatus(online ? "online" : "offline");
+      return online;
+    } catch {
+      setComfyuiStatus("offline");
+      return false;
+    }
+  }, []);
+
+  const handleStartComfyui = useCallback(async () => {
+    setComfyuiLoading(true);
+    try {
+      await servicesApi.startComfyUI();
+      // Poll until online (up to 30s)
+      for (let i = 0; i < 10; i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const online = await checkComfyui();
+        if (online) break;
+      }
+    } catch (err: any) {
+      addNotification({ type: "error", title: "Failed to start ComfyUI", message: err?.message });
+    } finally {
+      setComfyuiLoading(false);
+    }
+  }, [checkComfyui, addNotification]);
+
+  const handleStopComfyui = useCallback(async () => {
+    setComfyuiLoading(true);
+    try {
+      await servicesApi.stopComfyUI();
+      setComfyuiStatus("offline");
+    } catch (err: any) {
+      addNotification({ type: "error", title: "Failed to stop ComfyUI", message: err?.message });
+    } finally {
+      setComfyuiLoading(false);
+    }
+  }, [addNotification]);
+
+  const handleToggle = useCallback(async (enabled: boolean) => {
+    if (enabled) {
+      const online = await checkComfyui();
+      if (!online) {
+        addNotification({
+          type: "warning",
+          title: "ComfyUI is offline",
+          message: "Single Click Generation is ON, but ComfyUI is not running. Use the Start button to launch it.",
+        });
+      }
+    }
+    setSingleClickEnabled(enabled);
+  }, [checkComfyui, setSingleClickEnabled, addNotification]);
 
   const [localSettings, setLocalSettings] = useState<AppSettings | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -1116,6 +1182,111 @@ export default function SettingsPage() {
               />
             </Grid>
           </Grid>
+        </AccordionDetails>
+      </Accordion>
+
+      {/* ── Single Click Generation ─────────────────────────────────── */}
+      <Accordion defaultExpanded={false} onChange={(_, expanded) => { if (expanded) checkComfyui(); }}>
+        <AccordionSummary expandIcon={<ExpandIcon />}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+            <PipelineIcon color={singleClickEnabled ? "primary" : "disabled"} />
+            <Typography variant="h6">Single Click Generation</Typography>
+            {singleClickEnabled && <Chip label="ON" color="primary" size="small" sx={{ ml: 1 }} />}
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={singleClickEnabled}
+                  onChange={(e) => handleToggle(e.target.checked)}
+                  color="primary"
+                />
+              }
+              label={
+                <Box>
+                  <Typography variant="body1">Enable Single Click Generation</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    When ON, clicking Research (Deep Dive) or Fetch &amp; Generate (AI News) automatically runs all steps end-to-end.
+                  </Typography>
+                </Box>
+              }
+            />
+
+            {singleClickEnabled && (
+              <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5, pl: 1 }}>
+                <Divider />
+
+                {/* ComfyUI status row */}
+                <Box sx={{ display: "flex", alignItems: "center", gap: 1.5, flexWrap: "wrap" }}>
+                  <Box
+                    sx={{
+                      width: 10, height: 10, borderRadius: "50%", flexShrink: 0,
+                      bgcolor:
+                        comfyuiStatus === "online"  ? "success.main" :
+                        comfyuiStatus === "offline" ? "error.main"   : "grey.500",
+                      boxShadow: comfyuiStatus === "online" ? "0 0 6px 2px rgba(76,175,80,0.5)" : "none",
+                    }}
+                  />
+                  <Typography variant="body2">
+                    ComfyUI —{" "}
+                    <strong>
+                      {comfyuiStatus === "online"  ? "Online" :
+                       comfyuiStatus === "offline" ? "Offline" : "Unknown"}
+                    </strong>
+                  </Typography>
+                  <Box sx={{ ml: "auto", display: "flex", gap: 1 }}>
+                    {comfyuiStatus !== "online" ? (
+                      <Button
+                        size="small"
+                        variant="contained"
+                        color="success"
+                        disabled={comfyuiLoading}
+                        startIcon={comfyuiLoading ? <CircularProgress size={14} color="inherit" /> : undefined}
+                        onClick={handleStartComfyui}
+                      >
+                        {comfyuiLoading ? "Starting…" : "Start ComfyUI"}
+                      </Button>
+                    ) : (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        color="error"
+                        disabled={comfyuiLoading}
+                        startIcon={comfyuiLoading ? <CircularProgress size={14} color="inherit" /> : undefined}
+                        onClick={handleStopComfyui}
+                      >
+                        {comfyuiLoading ? "Stopping…" : "Stop ComfyUI"}
+                      </Button>
+                    )}
+                  </Box>
+                </Box>
+
+                {/* Step overview */}
+                <Box>
+                  <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: "block" }}>
+                    Deep Dive pipeline steps:
+                  </Typography>
+                  <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
+                    {["Research & Script", "Images (FLUX)", "Voice (TTS)", "Subtitles", "Thumbnail", "Video Render"].map((s, i) => (
+                      <Chip key={s} label={`${i + 1}. ${s}`} size="small" variant="outlined" />
+                    ))}
+                  </Box>
+                </Box>
+                <Box>
+                  <Typography variant="caption" color="text.secondary" sx={{ mb: 0.5, display: "block" }}>
+                    AI News pipeline steps:
+                  </Typography>
+                  <Box sx={{ display: "flex", flexWrap: "wrap", gap: 0.5 }}>
+                    {["Fetch Topics", "Content & Sections", "Section Images", "Section Voice", "Section Subtitles", "LTX Clips", "Video Render"].map((s, i) => (
+                      <Chip key={s} label={`${i + 1}. ${s}`} size="small" variant="outlined" />
+                    ))}
+                  </Box>
+                </Box>
+              </Box>
+            )}
+          </Box>
         </AccordionDetails>
       </Accordion>
     </Box>
