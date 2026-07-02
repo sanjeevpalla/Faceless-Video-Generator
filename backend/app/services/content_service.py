@@ -530,6 +530,60 @@ class ContentGenerationService:
             raise
 
     @staticmethod
+    def _repair_json_array(text: str) -> Optional[str]:
+        """Best-effort repair for a JSON array truncated or malformed by the model.
+
+        Handles the two failure modes seen in practice: a trailing comma before
+        the closing bracket, and a response cut off mid-object (missing the
+        final `}` / `]`). Returns repaired text that parses as JSON, or None
+        if no repair worked.
+        """
+        candidate = text.strip()
+        if not candidate.startswith("["):
+            return None
+
+        # 1. Trailing comma before a closing bracket/brace.
+        no_trailing_commas = re.sub(r",(\s*[\]}])", r"\1", candidate)
+        try:
+            json.loads(no_trailing_commas)
+            return no_trailing_commas
+        except json.JSONDecodeError:
+            pass
+
+        # 2. Truncated mid-object — cut back to the last complete top-level
+        # object and close the array.
+        depth = 0
+        in_string = False
+        escape = False
+        last_complete_end = -1
+        for i, ch in enumerate(no_trailing_commas):
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:  # closed a top-level array element
+                    last_complete_end = i
+
+        if last_complete_end == -1:
+            return None
+        truncated = no_trailing_commas[: last_complete_end + 1] + "\n]"
+        try:
+            json.loads(truncated)
+            return truncated
+        except json.JSONDecodeError:
+            return None
+
+    @staticmethod
     def _extract_json(text: str) -> str:
         match = re.search(r"```(?:json)?\s*([\[{].*?)\s*```", text, re.DOTALL)
         if match:
@@ -633,8 +687,13 @@ class ContentGenerationService:
         try:
             json.loads(json_text)
         except json.JSONDecodeError:
-            self.logger.warning("Scenes JSON parse failed — returning raw text")
-            json_text = raw
+            repaired = self._repair_json_array(json_text)
+            if repaired:
+                self.logger.warning("Scenes JSON was malformed — auto-repaired")
+                json_text = repaired
+            else:
+                self.logger.warning("Scenes JSON parse failed and could not be repaired — returning raw text")
+                json_text = raw
         (self.input_dir / "scenes.json").write_text(json_text, encoding="utf-8")
         await self._report(100, "scenes.json saved", "scenes")
         return json_text

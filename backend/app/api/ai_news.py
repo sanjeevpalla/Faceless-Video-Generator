@@ -1484,11 +1484,13 @@ async def regenerate_section_clip(
     label: str,
     background_tasks: BackgroundTasks,
     project_repo: ProjectRepository = Depends(get_project_repo),
+    settings_repo: SettingsRepository = Depends(get_settings_repo),
 ):
     """Re-generate the 16:9 clip for one section from its images + narration."""
     project = await project_repo.get_by_id(project_id)
     if not project:
         raise ProjectNotFoundError(project_id)
+    channel_name = (await settings_repo.get_by_key("channel.name")) or "Deep Dive AI"
 
     project_dir = (
         Path(project.project_dir) if project.project_dir else Path(f"projects/{project_id}")
@@ -1518,7 +1520,10 @@ async def regenerate_section_clip(
                  "message": f"Re-generating clip for '{label}'…"},
             )
             from app.services.shorts_service import AiNewsClipService
-            svc = AiNewsClipService(project_id=project_id, project_dir=project_dir)
+            svc = AiNewsClipService(
+                project_id=project_id, project_dir=project_dir,
+                language=project.language or "en", channel_name=channel_name,
+            )
             result = await svc.regenerate_section_clip(label, title=title)
             await connection_manager.broadcast_to_project(
                 project_id, "job_completed",

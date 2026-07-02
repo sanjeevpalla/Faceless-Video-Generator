@@ -407,7 +407,10 @@ class PipelineService(BaseService):
             except Exception:
                 pass
 
-        clip_svc  = AiNewsClipService(project_id=self.project_id, project_dir=self.project_dir)
+        clip_svc  = AiNewsClipService(
+            project_id=self.project_id, project_dir=self.project_dir,
+            language=self.project_language, channel_name=self.channel_name,
+        )
         short_svc = AiNewsShortsService(
             project_id=self.project_id, project_dir=self.project_dir,
             narrator_clips_dir=self.video.narrator_clips_dir or "",

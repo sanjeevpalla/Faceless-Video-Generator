@@ -69,9 +69,11 @@ async def run_pipeline(
     flux_cfg    = await settings_repo.get_flux_settings()
     piper_cfg   = await settings_repo.get_piper_settings()
     video_cfg   = await settings_repo.get_video_settings()
-    whisper_cfg = await settings_repo.get_whisper_settings()
     gemini_cfg  = await settings_repo.get_gemini_settings()
-    app_cfg     = await settings_repo.get_app_settings()
+    whisper_model = await settings_repo.get_by_key("whisper.model") or "base"
+    whisper_device = await settings_repo.get_by_key("whisper.device") or "cpu"
+    tts_engine    = await settings_repo.get_by_key("tts.engine") or "piper"
+    channel_name  = (await settings_repo.get_by_key("channel.name")) or "Deep Dive AI"
 
     google_tts_cfg = None
     try:
@@ -161,11 +163,11 @@ async def run_pipeline(
             flux_settings=flux_cfg,
             piper_settings=piper_proxy,
             video_settings=video_proxy,
-            whisper_model=whisper_cfg.model if whisper_cfg else "base",
-            whisper_device=whisper_cfg.device if whisper_cfg else "cpu",
-            tts_engine=getattr(app_cfg, "tts_engine", "piper") if app_cfg else "piper",
+            whisper_model=whisper_model,
+            whisper_device=whisper_device,
+            tts_engine=tts_engine,
             google_tts_settings=google_proxy,
-            channel_name=getattr(app_cfg, "channel_name", "Deep Dive AI") if app_cfg else "Deep Dive AI",
+            channel_name=channel_name,
             comfyui_url=comfyui_url,
             progress_callback=progress_cb,
         )

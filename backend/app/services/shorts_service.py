@@ -900,7 +900,17 @@ class AiNewsShortsService:
                         f"LTX clip concat failed for '{section_label}':\n"
                         + stderr_c.decode(errors="replace")[-500:]
                     )
-                vid_input = ["-i", str(raw_concat)]
+
+                # LTX clips are generated independently of narration length and
+                # often fall short of total_duration. Without this, the final
+                # -t total_duration below can't invent extra video frames — the
+                # video track ends early and playback cuts off the narration
+                # tail. Loop the clip so it always covers the full narration;
+                # -t then only ever trims excess video, never truncates audio.
+                raw_concat_dur = await self._probe_duration(raw_concat)
+                vid_input = (
+                    ["-stream_loop", "-1"] if raw_concat_dur < total_duration - 0.05 else []
+                ) + ["-i", str(raw_concat)]
 
             elif images:
                 per = total_duration / len(images)
@@ -1085,9 +1095,14 @@ class AiNewsClipService:
     CANVAS_H = 1080
     FPS = 30
 
-    def __init__(self, project_id: str, project_dir: Path) -> None:
+    def __init__(
+        self, project_id: str, project_dir: Path,
+        language: str = "en", channel_name: str = "Deep Dive AI",
+    ) -> None:
         self.project_id = project_id
         self.project_dir = project_dir
+        self.language = language
+        self.channel_name = channel_name
 
     async def regenerate_section_clip(
         self,
@@ -1151,6 +1166,8 @@ class AiNewsClipService:
             project_id=self.project_id,
             project_dir=self.project_dir,
             project_type="ai_news",
+            language=self.language,
+            channel_name=self.channel_name,
         )
 
         loop = asyncio.get_event_loop()
@@ -1205,7 +1222,23 @@ class AiNewsClipService:
                         f"LTX clip concat failed for '{section_label}':\n"
                         + stderr_c.decode(errors="replace")[-500:]
                     )
-                vid_input = ["-i", str(raw_concat)]
+
+                # LTX clips are generated independently of narration length and
+                # often fall short of total_duration. Without this, the final
+                # -t total_duration below can't invent extra video frames — the
+                # video track ends early and playback cuts off the narration
+                # tail. Loop the clip so it always covers the full narration;
+                # -t then only ever trims excess video, never truncates audio.
+                probe = await asyncio.create_subprocess_exec(
+                    "ffprobe", "-v", "quiet", "-print_format", "json", "-show_format",
+                    str(raw_concat),
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                )
+                probe_out, _ = await probe.communicate()
+                raw_concat_dur = float(json.loads(probe_out)["format"]["duration"])
+                vid_input = (
+                    ["-stream_loop", "-1"] if raw_concat_dur < total_duration - 0.05 else []
+                ) + ["-i", str(raw_concat)]
 
             elif images:
                 per = total_duration / len(images)

@@ -146,6 +146,30 @@ TEMPLATES: Dict[str, Dict[str, Any]] = {
 
 
 # ---------------------------------------------------------------------------
+# AI News agenda card — the header/footer labels stay English by design; only
+# the per-story title list is localized (Nirmala UI ships with Windows 10/11
+# and covers Telugu/Hindi/etc.; CJK/Arabic still fall back to whatever the OS
+# resolves via the candidate list below).
+# ---------------------------------------------------------------------------
+_UNICODE_FONT_CANDIDATES = [
+    "C:/Windows/Fonts/Nirmala.ttc",
+    "C:/Windows/Fonts/NirmalaB.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+]
+
+
+def _load_unicode_font(sz: int):
+    """Best-effort font loader for non-Latin scripts (falls back to None)."""
+    from PIL import ImageFont
+    for path in _UNICODE_FONT_CANDIDATES:
+        try:
+            return ImageFont.truetype(path, sz, index=0)
+        except Exception:
+            continue
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Per-scene style rules — keyword-matched from scenes.json metadata
 # ---------------------------------------------------------------------------
 SCENE_STYLE_RULES: List[Dict[str, Any]] = [
@@ -264,10 +288,14 @@ class VideoGenerationService(BaseService):
         logo_margin: int = 20,
         project_type: str = "deep_dive",
         burn_subtitles: bool = True,
+        language: str = "en",
+        channel_name: str = "Deep Dive AI",
     ) -> None:
         super().__init__(project_id, project_dir, progress_callback, settings)
         self.burn_subtitles = burn_subtitles
         self.project_type = project_type
+        self.language = language
+        self.channel_name = channel_name
         # AI News projects default to the "ai_news" template when the caller
         # hasn't explicitly picked a different one (i.e. still on "documentary").
         if project_type == "ai_news" and template == "documentary":
@@ -941,9 +969,14 @@ class VideoGenerationService(BaseService):
                     pass
             return ImageFont.load_default()
 
+        # Header/footer stay English by design — only the per-story title list
+        # below is localized (it mirrors the actual script content).
         hdr_font  = load_f(int(H * 0.052), bold=True)
         item_font = load_f(int(H * 0.030))
         ftr_font  = load_f(int(H * 0.026))
+        # Non-Latin story titles need a font with the right glyphs — Arial/
+        # DejaVu render Telugu/Hindi/etc. as tofu boxes.
+        item_font_localized = _load_unicode_font(int(H * 0.028))
 
         # Channel / date header
         draw.text(
@@ -958,16 +991,23 @@ class VideoGenerationService(BaseService):
         text_x   = int(W * 0.13)
         max_tw   = W - text_x - int(W * 0.03)   # right margin
 
-        def _fit_title(t: str) -> str:
+        def _title_font(t: str):
+            # Use the Unicode font for any title containing non-ASCII text
+            # (localized story titles); Arial/DejaVu can't render those glyphs.
+            if item_font_localized and any(ord(c) > 127 for c in t):
+                return item_font_localized
+            return item_font
+
+        def _fit_title(t: str, font) -> str:
             try:
-                if draw.textlength(t, font=item_font) <= max_tw:
+                if draw.textlength(t, font=font) <= max_tw:
                     return t
                 # Trim word-by-word until it fits with ellipsis
                 words = t.split()
                 acc = ""
                 for w in words:
                     candidate = (acc + " " + w).strip()
-                    if draw.textlength(candidate + "…", font=item_font) <= max_tw:
+                    if draw.textlength(candidate + "…", font=font) <= max_tw:
                         acc = candidate
                     else:
                         break
@@ -978,16 +1018,17 @@ class VideoGenerationService(BaseService):
         line_h = int(H * 0.066)
         y = int(H * 0.17)
         for i, title in enumerate(story_titles[:10], 1):
-            display = _fit_title(title)
+            font = _title_font(title)
+            display = _fit_title(title, font)
             # Number bullet (amber)
             draw.text((int(W * 0.06), y), f"{i:2d}.", font=item_font, fill=AMBER)
             # Title text (white)
-            draw.text((text_x, y), display, font=item_font, fill=WHITE)
+            draw.text((text_x, y), display, font=font, fill=WHITE)
             y += line_h
 
         draw.text(
             (W // 2, H - 38),
-            "DEEP DIVE AI  ·  AI NEWS",
+            f"{self.channel_name.upper()}  ·  AI NEWS",
             font=ftr_font, fill=DIM, anchor="mm",
         )
 
@@ -1419,17 +1460,26 @@ class VideoGenerationService(BaseService):
                     sec_narr_dur = sum(scene_durations[i] for i in indices)
                 narr_end  = narr_start + sec_narr_dur
                 vid_dur   = self._probe_duration(raw_sec)
+                # Per-scene frame-quantization rounding can make the concatenated
+                # video a hair shorter than the narration; atrim-to-vid_dur would
+                # then chop the tail of the narration. Extend the video (freeze
+                # last frame) to at least cover the narration instead of ever
+                # cutting audio.
+                final_dur = max(vid_dur, sec_narr_dur)
+                pad_dur   = max(0.0, final_dur - vid_dur)
                 sec_muxed = sec_dir / "scenes_muxed.mp4"
                 subprocess.run([
                     "ffmpeg", "-y",
                     "-i", str(raw_sec), "-i", str(perm_narr),
                     "-filter_complex",
+                    f"[0:v]tpad=stop_mode=clone:stop_duration={pad_dur:.4f}[vout];"
                     f"[1:a]aresample=44100,"
-                    f"atrim=end={vid_dur:.4f},asetpts=PTS-STARTPTS,"
-                    f"apad=whole_dur={vid_dur:.4f}[aout]",
-                    "-map", "0:v:0", "-map", "[aout]",
-                    "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
-                    "-t", f"{vid_dur:.4f}", str(sec_muxed),
+                    f"atrim=end={final_dur:.4f},asetpts=PTS-STARTPTS,"
+                    f"apad=whole_dur={final_dur:.4f}[aout]",
+                    "-map", "[vout]", "-map", "[aout]",
+                    *self._codec_args(codec), "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-b:a", "128k",
+                    "-t", f"{final_dur:.4f}", str(sec_muxed),
                 ], capture_output=True, text=True, timeout=300)
                 if sec_muxed.exists():
                     sec_content = sec_muxed
@@ -1469,17 +1519,22 @@ class VideoGenerationService(BaseService):
                             sec_narr_dur = sum(scene_durations[i] for i in indices)
                         narr_end   = narr_start + sec_narr_dur
                         vid_dur    = self._probe_duration(raw_sec)
+                        # See comment above: extend video instead of trimming audio.
+                        final_dur = max(vid_dur, sec_narr_dur)
+                        pad_dur   = max(0.0, final_dur - vid_dur)
                         sec_muxed  = sec_dir / "scenes_muxed.mp4"
                         subprocess.run([
                             "ffmpeg", "-y",
                             "-i", str(raw_sec), "-i", str(sec_narr),
                             "-filter_complex",
+                            f"[0:v]tpad=stop_mode=clone:stop_duration={pad_dur:.4f}[vout];"
                             f"[1:a]aresample=44100,"
-                            f"atrim=end={vid_dur:.4f},asetpts=PTS-STARTPTS,"
-                            f"apad=whole_dur={vid_dur:.4f}[aout]",
-                            "-map", "0:v:0", "-map", "[aout]",
-                            "-c:v", "copy", "-c:a", "aac", "-b:a", "128k",
-                            "-t", f"{vid_dur:.4f}", str(sec_muxed),
+                            f"atrim=end={final_dur:.4f},asetpts=PTS-STARTPTS,"
+                            f"apad=whole_dur={final_dur:.4f}[aout]",
+                            "-map", "[vout]", "-map", "[aout]",
+                            *self._codec_args(codec), "-pix_fmt", "yuv420p",
+                            "-c:a", "aac", "-b:a", "128k",
+                            "-t", f"{final_dur:.4f}", str(sec_muxed),
                         ], capture_output=True, text=True, timeout=300)
                         if sec_muxed.exists():
                             sec_content = sec_muxed
@@ -2681,6 +2736,11 @@ class VideoGenerationService(BaseService):
         f_num   = load_f(int(H * 0.20), bold=True)
         f_title = load_f(int(H * 0.058), bold=True)
         f_sub   = load_f(int(H * 0.026))
+
+        # Localized story titles (Telugu/Hindi/etc.) need a Unicode-capable
+        # font — Arial/DejaVu render those glyphs as tofu boxes.
+        if any(ord(c) > 127 for c in title):
+            f_title = _load_unicode_font(int(H * 0.054)) or f_title
 
         def measure(text: str, font: Any):
             b = draw.textbbox((0, 0), text, font=font)

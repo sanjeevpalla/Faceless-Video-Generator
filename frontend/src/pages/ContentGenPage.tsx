@@ -31,7 +31,7 @@ import {
   Mic as NarratorIcon,
 } from "@mui/icons-material";
 import { useNavigate, useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useProjectStore, ContentStepState } from "../store/projectStore";
 import { useAppStore } from "../store/appStore";
 import { pipelineApi } from "../api/pipeline";
@@ -79,6 +79,54 @@ function tryPrettyJson(content: string): string | null {
   } catch {
     return null;
   }
+}
+
+function JsonViewer({ content }: { content: string }) {
+  const prettyJson = tryPrettyJson(content);
+  if (!prettyJson) return (
+    <Box component="pre" sx={{ flex: 1, overflow: "auto", m: 0, p: 2, fontSize: "0.8rem", fontFamily: "monospace", bgcolor: "rgba(0,0,0,0.4)", borderRadius: 2, whiteSpace: "pre-wrap" }}>
+      {content}
+    </Box>
+  );
+  return (
+    <Box
+      component="pre"
+      sx={{
+        flex: 1, overflow: "auto", m: 0, p: 2,
+        fontSize: "0.8rem", lineHeight: 1.6,
+        fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+        bgcolor: "rgba(0,0,0,0.45)",
+        border: "1px solid rgba(255,255,255,0.08)",
+        borderRadius: 2,
+        whiteSpace: "pre",
+        wordBreak: "normal",
+        color: "text.primary",
+        "& .json-key":    { color: "#79b8ff" },
+        "& .json-str":    { color: "#9ecbff" },
+        "& .json-num":    { color: "#f8c555" },
+        "& .json-bool":   { color: "#56d364" },
+        "& .json-null":   { color: "#888" },
+      }}
+      dangerouslySetInnerHTML={{
+        __html: prettyJson
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(
+            /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+            (match) => {
+              if (/^"/.test(match)) {
+                if (/:$/.test(match)) return `<span class="json-key">${match}</span>`;
+                return `<span class="json-str">${match}</span>`;
+              }
+              if (/true|false/.test(match)) return `<span class="json-bool">${match}</span>`;
+              if (/null/.test(match))       return `<span class="json-null">${match}</span>`;
+              return `<span class="json-num">${match}</span>`;
+            }
+          ),
+      }}
+    />
+  );
 }
 
 // ── Research parser + viewer ──────────────────────────────────────────────────
@@ -412,6 +460,7 @@ export default function ContentGenPage() {
 
   const pid = currentProject?.id ?? "";
   const isAiNews = currentProject?.project_type === "ai_news";
+  const queryClient = useQueryClient();
 
   const [sectionLabel, setSectionLabel] = useState<string | null>(null);
 
@@ -540,6 +589,13 @@ export default function ContentGenPage() {
         text = r.text;
       }
       setStep(key, { status: "done", content: text });
+
+      // AI News: scenes/image-prompts responses just landed on disk — refetch
+      // the per-section content so the backend's auto-split (GET .../sections/content)
+      // runs immediately and the section tabs populate without a stale 30s wait.
+      if (isAiNews && (key === "scenes" || key === "imagePrompts")) {
+        queryClient.invalidateQueries({ queryKey: ["ai-news-sections-content", pid] });
+      }
     } catch (e: any) {
       setStep(key, { status: "error", error: e?.message ?? "Unknown error" });
     }
@@ -629,22 +685,11 @@ export default function ContentGenPage() {
                 <Typography variant="body2">Loading section content…</Typography>
               </Box>
             ) : text ? (
-              <Box
-                component="pre"
-                sx={{
-                  flex: 1, overflow: "auto", m: 0, p: 2,
-                  fontSize: "0.8rem", lineHeight: 1.6,
-                  fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-                  bgcolor: "rgba(0,0,0,0.45)",
-                  border: "1px solid rgba(255,255,255,0.08)",
-                  borderRadius: 2,
-                  whiteSpace: "pre",
-                  wordBreak: "normal",
-                  color: "text.primary",
-                }}
-              >
-                {text}
-              </Box>
+              currentStep.key === "scenes" ? (
+                <JsonViewer content={text} />
+              ) : (
+                <ImagePromptsViewer content={text} />
+              )
             ) : fallbackScript ? (
               /* Per-section file missing — show raw script as fallback */
               <Box sx={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, gap: 1 }}>
@@ -745,43 +790,7 @@ export default function ContentGenPage() {
             ) : currentStep.key === "thumbnail" ? (
               <ThumbnailViewer content={stepState.content} />
             ) : isJsonStep && prettyJson ? (
-              <Box
-                component="pre"
-                sx={{
-                  flex: 1, overflow: "auto", m: 0, p: 2,
-                  fontSize: "0.8rem", lineHeight: 1.6,
-                  fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-                  bgcolor: "rgba(0,0,0,0.45)",
-                  border: "1px solid rgba(255,255,255,0.08)",
-                  borderRadius: 2,
-                  whiteSpace: "pre",
-                  wordBreak: "normal",
-                  color: "text.primary",
-                  "& .json-key":    { color: "#79b8ff" },
-                  "& .json-str":    { color: "#9ecbff" },
-                  "& .json-num":    { color: "#f8c555" },
-                  "& .json-bool":   { color: "#56d364" },
-                  "& .json-null":   { color: "#888" },
-                }}
-                dangerouslySetInnerHTML={{
-                  __html: prettyJson
-                    .replace(/&/g, "&amp;")
-                    .replace(/</g, "&lt;")
-                    .replace(/>/g, "&gt;")
-                    .replace(
-                      /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
-                      (match) => {
-                        if (/^"/.test(match)) {
-                          if (/:$/.test(match)) return `<span class="json-key">${match}</span>`;
-                          return `<span class="json-str">${match}</span>`;
-                        }
-                        if (/true|false/.test(match)) return `<span class="json-bool">${match}</span>`;
-                        if (/null/.test(match))       return `<span class="json-null">${match}</span>`;
-                        return `<span class="json-num">${match}</span>`;
-                      }
-                    ),
-                }}
-              />
+              <JsonViewer content={stepState.content} />
             ) : (
               /* Markdown viewer (all non-JSON steps) */
               <Box

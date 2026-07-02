@@ -128,6 +128,7 @@ async def trigger_job(
     whisper_model = await settings_repo.get_by_key("whisper.model") or "base"
     whisper_device = await settings_repo.get_by_key("whisper.device") or "cuda"
     whisper_language = await settings_repo.get_by_key("whisper.language") or "en"
+    channel_name = (await settings_repo.get_by_key("channel.name")) or "Deep Dive AI"
 
     async def progress_cb(progress: float, message: str, data: dict):
         # Use a fresh session — the request-scoped job_repo session closes when the
@@ -246,6 +247,8 @@ async def trigger_job(
                 logo_margin=video_settings.logo_margin,
                 burn_subtitles=video_settings.burn_subtitles,
                 project_type=getattr(project, "project_type", "deep_dive") or "deep_dive",
+                language=project_language,
+                channel_name=channel_name,
             )
             return svc.execute()
         elif jtype == JobType.METADATA:
