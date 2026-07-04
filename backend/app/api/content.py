@@ -200,7 +200,9 @@ async def discover_trends(
 
         if not stories:
             try:
-                stories = await scrape_rss_news(n=10)
+                from app.services.ai_news_service import get_recent_story_titles
+                exclude_titles = get_recent_story_titles(exclude_dir=project_dir)
+                stories = await scrape_rss_news(n=10, exclude_titles=exclude_titles)
             except Exception as exc:
                 raise HTTPException(status_code=500, detail=f"Failed to fetch AI news: {exc}")
 

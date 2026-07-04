@@ -743,9 +743,10 @@ class ContentGenerationService:
         prompt = _SEO_PROMPT.format(script=script[:4000], channel=self.channel_name)
         if not self._is_english():
             prompt += (
-                f"\n\nLANGUAGE REQUIREMENT: Generate ALL metadata in {self._lang_name()}. "
-                "This includes: title, alternate_titles, description, tags, hashtags, chapters, and keywords. "
-                f"Optimise tags and keywords for {self._lang_name()}-language YouTube search. "
+                "\n\nLANGUAGE REQUIREMENT: Even though the video narration is in "
+                f"{self._lang_name()}, generate ALL YouTube metadata (title, alternate_titles, "
+                "description, tags, hashtags, chapters, and keywords) in ENGLISH — optimise for "
+                "English-language YouTube search regardless of the narration language. "
                 "Return valid JSON only."
             )
         # JSON output — same reason as scenes: use larger model for reliable structure

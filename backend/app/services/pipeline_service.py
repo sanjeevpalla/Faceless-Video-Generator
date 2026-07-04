@@ -267,13 +267,14 @@ class PipelineService(BaseService):
             await sub_cb(100, "Topics already fetched — skipping", {})
             return
 
-        from app.services.ai_news_service import AiNewsService, scrape_rss_news
+        from app.services.ai_news_service import AiNewsService, get_recent_story_titles, scrape_rss_news
         try:
             svc = self._build_ai_news_svc(sub_cb)
             stories = await svc.scrape_news_stories(n=10)
         except Exception as exc:
             self.logger.warning("Gemini news scrape failed, falling back to RSS: %s", exc)
-            stories = await scrape_rss_news(n=10)
+            exclude_titles = get_recent_story_titles(exclude_dir=self.project_dir)
+            stories = await scrape_rss_news(n=10, exclude_titles=exclude_titles)
 
         input_dir = self.project_dir / "input"
         input_dir.mkdir(parents=True, exist_ok=True)

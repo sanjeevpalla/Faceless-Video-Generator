@@ -236,7 +236,9 @@ async def scrape_ai_news(
         except Exception as exc:
             logger.warning("Gemini news scrape failed, falling back to RSS: %s", exc)
 
-    stories = await scrape_rss_news(n=10)
+    from app.services.ai_news_service import get_recent_story_titles
+    exclude_titles = get_recent_story_titles(exclude_dir=project_dir)
+    stories = await scrape_rss_news(n=10, exclude_titles=exclude_titles)
     return {"stories": stories, "source": "rss"}
 
 

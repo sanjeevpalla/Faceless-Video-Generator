@@ -7,10 +7,12 @@ thumbnail, and SEO methods. Only the script step is replaced with a news-anchor 
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json as _json
 import re
 import xml.etree.ElementTree as ET
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 import urllib.request
 
@@ -19,18 +21,78 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+# How many days back to look for previously-covered stories when de-duplicating.
+# Wider than 1 day so a project generated late at night still catches a same-day sibling.
+_DEDUPE_LOOKBACK_DAYS = 2
+
+
+def _normalize_title(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+
+
+def _titles_are_duplicate(a: str, b: str, threshold: float = 0.55) -> bool:
+    na, nb = _normalize_title(a), _normalize_title(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    return difflib.SequenceMatcher(None, na, nb).ratio() >= threshold
+
+
+def _filter_duplicate_stories(stories: List[Dict], exclude_titles: List[str]) -> List[Dict]:
+    """Drop stories whose title closely matches one already covered recently."""
+    if not exclude_titles:
+        return stories
+    return [
+        s for s in stories
+        if not any(_titles_are_duplicate(s.get("title", ""), ex) for ex in exclude_titles)
+    ]
+
+
+def get_recent_story_titles(exclude_dir: Optional[Path] = None, days: int = _DEDUPE_LOOKBACK_DAYS) -> List[str]:
+    """Scan every project's input/topics.json for story titles covered recently.
+
+    Used to avoid the new AI news video repeating a story from yesterday's video.
+    """
+    from app.config import get_settings
+
+    projects_dir = get_settings().PROJECTS_DIR
+    if not projects_dir.exists():
+        return []
+
+    cutoff = datetime.now() - timedelta(days=days)
+    exclude_dir_resolved = exclude_dir.resolve() if exclude_dir else None
+
+    titles: List[str] = []
+    for topics_path in projects_dir.glob("*/input/topics.json"):
+        project_dir = topics_path.parent.parent
+        if exclude_dir_resolved and project_dir.resolve() == exclude_dir_resolved:
+            continue
+        try:
+            if datetime.fromtimestamp(topics_path.stat().st_mtime) < cutoff:
+                continue
+            stories = _json.loads(topics_path.read_text(encoding="utf-8"))
+            for s in stories:
+                t = (s.get("title") or "").strip()
+                if t:
+                    titles.append(t)
+        except Exception:
+            continue
+
+    return titles
+
 _NEWS_SCRAPE_PROMPT = """You are an AI news curator with access to real-time Google Search.
 
 TODAY: {today}
 
-TASK: Find the 10 most important AI news stories from the LAST 24 HOURS (since {yesterday}).
+TASK: Find the {count} most important AI news stories from the LAST 24 HOURS (since {yesterday}).
 
 Use Google Search to find real, current news published today or yesterday only.
 
 FOCUS AREAS: AI model releases, major company announcements, AI research breakthroughs, AI regulation, AI investments, AI tools and products, AI safety.
 
 REQUIREMENTS:
-- All 10 stories MUST be from the last 24 hours — verify publication dates
+- All {count} stories MUST be from the last 24 hours — verify publication dates
 - Cover diverse topics (avoid 2 stories about the same company unless both are landmark)
 - Prioritize breaking news, major product launches, large investments, regulatory actions
 - No recycled or generic AI stories — each must be a specific real event
@@ -44,22 +106,27 @@ OUTPUT: Return ONLY a valid JSON array. No markdown, no explanation, no code blo
   }}
 ]
 
-Return exactly 10 stories, most significant first. Return ONLY the JSON array, nothing else."""
+Return exactly {count} stories, most significant first. Return ONLY the JSON array, nothing else."""
 
 
-async def scrape_rss_news(n: int = 10) -> List[Dict]:
-    """Fetch AI news from public RSS feeds — no API key required."""
+async def scrape_rss_news(n: int = 10, exclude_titles: Optional[List[str]] = None) -> List[Dict]:
+    """Fetch AI news from public RSS feeds — no API key required.
+
+    When exclude_titles is given, stories matching a recently-covered title are skipped
+    and extra candidates are fetched from each feed to compensate.
+    """
     feeds = [
         "https://news.google.com/rss/search?q=artificial+intelligence+AI&hl=en-US&gl=US&ceid=US:en",
         "https://techcrunch.com/category/artificial-intelligence/feed/",
         "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
         "https://venturebeat.com/category/ai/feed/",
     ]
+    fetch_limit = n * 3 if exclude_titles else n
     stories: List[Dict] = []
     seen: set = set()
 
     for url in feeds:
-        if len(stories) >= n:
+        if len(stories) >= fetch_limit:
             break
         try:
             def _fetch(u: str = url) -> str:
@@ -73,7 +140,7 @@ async def scrape_rss_news(n: int = 10) -> List[Dict]:
             root = ET.fromstring(content)
 
             for item in root.findall(".//item"):
-                if len(stories) >= n:
+                if len(stories) >= fetch_limit:
                     break
                 title_el = item.find("title")
                 if title_el is None or not title_el.text:
@@ -89,6 +156,8 @@ async def scrape_rss_news(n: int = 10) -> List[Dict]:
                 if key in seen:
                     continue
                 seen.add(key)
+                if exclude_titles and any(_titles_are_duplicate(title, ex) for ex in exclude_titles):
+                    continue
                 desc_el = item.find("description")
                 summary = ""
                 if desc_el is not None and desc_el.text:
@@ -125,7 +194,7 @@ SECTION 1: Introduction
 [VISUAL]
 Sleek AI news studio with holographic displays showing AI headlines, breaking news ticker, Deep Dive AI logo prominently displayed
 [NARRATOR]
-{intro narration ~65 words — welcome viewers, hook with the biggest story, brief preview of today's top 10}
+{intro narration ~65 words — welcome viewers, hook with the biggest story, brief preview of the top 10 stories — no date or day-of-week mention}
 
 SECTION 2: {Exact title of Story 1}
 [VISUAL]
@@ -198,7 +267,10 @@ IMPORTANT RULES:
 - Return the COMPLETE script with all 12 sections — do not skip or abbreviate any section
 - Never introduce stories with "Story number X" or "Number X" — open directly with the news
 - Write narration that flows naturally when read aloud at a steady pace
-- Keep each story segment self-contained with a clear opening and closing sentence"""
+- Keep each story segment self-contained with a clear opening and closing sentence
+- NEVER mention the date, day of week, or the word "today"/"this week" anywhere in any
+  [NARRATOR] block — the Introduction must open with a greeting/hook only, with no reference
+  to when the video was made (the DATE given above is for your reference only, not to narrate)"""
 
 
 class AiNewsService(ContentGenerationService):
@@ -206,23 +278,42 @@ class AiNewsService(ContentGenerationService):
 
     async def scrape_news_stories(self, n: int = 10) -> List[Dict]:
         """Fetch the latest AI news stories via Gemini search grounding.
-        Falls back to RSS scraping if Gemini returns unparseable output."""
+        Falls back to RSS scraping if Gemini returns unparseable output.
+        Excludes stories already covered in a recent (previous-day) video."""
         today = date.today()
         yesterday = today - timedelta(days=1)
+        exclude_titles = get_recent_story_titles(exclude_dir=self.project_dir)
+        # Ask for a few extra candidates so filtering out duplicates still leaves n stories.
+        fetch_count = n + 5 if exclude_titles else n
         prompt = _NEWS_SCRAPE_PROMPT.format(
             today=today.strftime("%B %d, %Y"),
             yesterday=yesterday.strftime("%B %d, %Y"),
+            count=fetch_count,
         )
+        if exclude_titles:
+            prompt += (
+                "\n\nDO NOT INCLUDE any of the following stories — they were already covered "
+                "in a recent video, even as a minor update or follow-up:\n"
+                + "\n".join(f"- {t}" for t in exclude_titles)
+            )
         try:
             raw = await self._call(prompt, model_name=self.pro_model, with_search=True)
             json_text = self._extract_json(raw)
             import json as _json
             stories = _json.loads(json_text)
             if isinstance(stories, list) and stories:
-                return stories[:n]
+                deduped = _filter_duplicate_stories(stories, exclude_titles)
+                result = deduped if deduped else stories
+                if len(result) >= n:
+                    return result[:n]
+                # Filtering still left us short — top up from RSS, excluding both the
+                # recently-covered titles and the ones already picked from Gemini.
+                already = exclude_titles + [s.get("title", "") for s in result]
+                backfill = await scrape_rss_news(n - len(result), exclude_titles=already)
+                return (result + backfill)[:n]
         except Exception as exc:
             self.logger.warning("Gemini news scrape parse failed: %s — falling back to RSS", exc)
-        return await scrape_rss_news(n)
+        return await scrape_rss_news(n, exclude_titles=exclude_titles)
 
     async def generate_news_script(self, stories: List[Dict[str, str]]) -> str:
         """Step 1 — Write a 12-section news anchor script from 10 provided stories."""
