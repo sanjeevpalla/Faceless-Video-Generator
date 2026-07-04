@@ -21,8 +21,6 @@ import {
   Alert,
   Skeleton,
   CircularProgress,
-  Tabs,
-  Tab,
 } from "@mui/material";
 import {
   AutoAwesome as GenerateIcon,
@@ -37,8 +35,6 @@ import {
   AutoFixHigh as KenBurnsIcon,
   MovieCreation as ClipsIcon,
   AutoAwesomeMotion as GeminiIcon,
-  Movie as VideoTabIcon,
-  Smartphone as ShortTabIcon,
   StopCircle as StopIcon,
 } from "@mui/icons-material";
 import { useProjectStore } from "../store";
@@ -419,74 +415,6 @@ function PreviewPanel({ scene, projectId, isRegenerating, onRegenerate }: Previe
 }
 
 // ---------------------------------------------------------------------------
-// Portrait (9:16) image card — simulates blur-background short layout
-// ---------------------------------------------------------------------------
-interface PortraitCardProps {
-  imageUrl: string;
-  sceneId: number;
-  isSelected: boolean;
-  onClick: () => void;
-}
-
-function PortraitCard({ imageUrl, sceneId, isSelected, onClick }: PortraitCardProps) {
-  return (
-    <Box
-      onClick={onClick}
-      sx={{
-        position: "relative",
-        aspectRatio: "9/16",
-        borderRadius: 1.5,
-        overflow: "hidden",
-        cursor: "pointer",
-        bgcolor: "#080810",
-        border: isSelected ? "2px solid" : "2px solid transparent",
-        borderColor: isSelected ? "primary.main" : "transparent",
-        "&:hover": { opacity: 0.88 },
-      }}
-    >
-      {/* Blurred background fills the entire 9:16 container */}
-      <Box
-        sx={{
-          position: "absolute", inset: 0,
-          backgroundImage: `url(${imageUrl})`,
-          backgroundSize: "cover",
-          backgroundPosition: "center",
-          filter: "blur(18px) saturate(0.75)",
-          transform: "scale(1.2)",
-        }}
-      />
-      {/* Sharp image centered */}
-      <Box
-        sx={{
-          position: "absolute", inset: 0,
-          display: "flex", alignItems: "center", justifyContent: "center",
-        }}
-      >
-        <Box
-          component="img"
-          src={imageUrl}
-          alt={`Scene ${sceneId}`}
-          sx={{ width: "100%", height: "auto" }}
-        />
-      </Box>
-      {/* Scene badge */}
-      <Chip
-        label={`#${sceneId}`}
-        size="small"
-        sx={{
-          position: "absolute", top: 4, left: 4,
-          height: 16, fontSize: "0.6rem",
-          bgcolor: "rgba(0,0,0,0.7)", color: "white",
-        }}
-      />
-      {isSelected && (
-        <DoneIcon sx={{ position: "absolute", top: 4, right: 4, fontSize: 15, color: "success.main" }} />
-      )}
-    </Box>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Helpers for AI News section images
 // ---------------------------------------------------------------------------
 function parseSectionPrompt(imagePrompts: string | null, sceneId: number): string {
@@ -775,7 +703,6 @@ export default function ImageGenPage() {
 
   const [sectionLabel, setSectionLabel] = useState<string | null>(null);
   const [selectedSectionImageId, setSelectedSectionImageId] = useState<number | null>(null);
-  const [mainTab, setMainTab] = useState<"video" | "short">("video");
   const [sectionGenerating, setSectionGenerating] = useState<Set<string>>(new Set());
   const sectionPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const sectionQueueRef = useRef<SectionContent[]>([]);
@@ -1182,31 +1109,6 @@ export default function ImageGenPage() {
           </Box>
         </Box>
 
-        {/* ── Main tabs: Video / Short ────────────────────────────────────── */}
-        <Tabs
-          value={mainTab}
-          onChange={(_, v: "video" | "short") => { setMainTab(v); setSelectedSectionImageId(null); }}
-          sx={{
-            mb: 0,
-            borderBottom: 1,
-            borderColor: "divider",
-            "& .MuiTab-root": { minHeight: 40, fontSize: "0.8rem", py: 1 },
-          }}
-        >
-          <Tab
-            value="video"
-            label="Video"
-            icon={<VideoTabIcon sx={{ fontSize: 16 }} />}
-            iconPosition="start"
-          />
-          <Tab
-            value="short"
-            label="Short (9:16)"
-            icon={<ShortTabIcon sx={{ fontSize: 16 }} />}
-            iconPosition="start"
-          />
-        </Tabs>
-
         {/* ── Section sub-tabs ────────────────────────────────────────────── */}
         <AiNewsSectionTabs
           sections={sectionsContent}
@@ -1252,8 +1154,8 @@ export default function ImageGenPage() {
                 <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 1.5 }}>
                   <Typography variant="subtitle1" fontWeight={700}>
                     {sectionLabel
-                      ? `${selectedSection?.title ?? sectionLabel} — ${mainTab === "video" ? "Video Images" : "Short Preview (9:16)"}`
-                      : mainTab === "video" ? "All Sections — Video Images" : "All Sections — Short Preview (9:16)"}
+                      ? `${selectedSection?.title ?? sectionLabel} — Video Images`
+                      : "All Sections — Video Images"}
                   </Typography>
                   <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
                     {sectionGenerating.has(viewLabel) && (
@@ -1261,7 +1163,7 @@ export default function ImageGenPage() {
                     )}
                     {sectionLabel && viewIds.length > 0 && (
                       <Typography variant="caption" color="text.secondary">
-                        {viewIds.length} {mainTab === "video" ? "images" : "previews"}
+                        {viewIds.length} images
                       </Typography>
                     )}
                     {sectionLabel && viewIds.length > 0 && (
@@ -1307,7 +1209,7 @@ export default function ImageGenPage() {
                         </Button>
                       )}
                     </Box>
-                  ) : mainTab === "video" ? (
+                  ) : (
                     /* Video: 16:9 grid with AiNewsSceneCard */
                     <Grid container spacing={1.5}>
                       {viewIds.map((sceneId) => {
@@ -1325,23 +1227,6 @@ export default function ImageGenPage() {
                               onSelect={() => setSelectedSectionImageId(selectedSectionImageId === sceneId ? null : sceneId)}
                               onRegenerate={() => handleSectionSceneRegenerate(viewLabel, sceneId)}
                               onReplace={(f) => handleSectionSceneReplace(viewLabel, sceneId, f)}
-                            />
-                          </Grid>
-                        );
-                      })}
-                    </Grid>
-                  ) : (
-                    /* Short: 9:16 portrait grid */
-                    <Grid container spacing={1.5}>
-                      {viewIds.map((sceneId) => {
-                        const url = aiNewsApi.getSectionImageUrl(currentProject.id, viewLabel, sceneId);
-                        return (
-                          <Grid item xs={6} sm={4} md={3} key={sceneId}>
-                            <PortraitCard
-                              imageUrl={url}
-                              sceneId={sceneId}
-                              isSelected={selectedSectionImageId === sceneId}
-                              onClick={() => setSelectedSectionImageId(selectedSectionImageId === sceneId ? null : sceneId)}
                             />
                           </Grid>
                         );
@@ -1367,32 +1252,25 @@ export default function ImageGenPage() {
                             <Chip label={`${sec.image_scene_ids.length} images`} size="small" sx={{ height: 16, fontSize: "0.6rem" }} />
                           </Box>
                           <Grid container spacing={1}>
-                            {sec.image_scene_ids.slice(0, mainTab === "video" ? 4 : 6).map((sceneId) => {
+                            {sec.image_scene_ids.slice(0, 4).map((sceneId) => {
                               const url = aiNewsApi.getSectionImageUrl(currentProject.id, sec.label, sceneId);
                               return (
-                                <Grid item xs={mainTab === "video" ? 3 : 2} key={`${sec.label}-${sceneId}`}>
-                                  {mainTab === "video" ? (
-                                    <Box
-                                      onClick={() => { setSectionLabel(sec.label); setSelectedSectionImageId(sceneId); }}
-                                      sx={{ aspectRatio: "16/9", borderRadius: 1, overflow: "hidden", cursor: "pointer", "&:hover": { opacity: 0.8 } }}
-                                    >
-                                      <Box component="img" src={url} sx={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                                    </Box>
-                                  ) : (
-                                    <PortraitCard
-                                      imageUrl={url} sceneId={sceneId} isSelected={false}
-                                      onClick={() => { setSectionLabel(sec.label); setSelectedSectionImageId(sceneId); }}
-                                    />
-                                  )}
+                                <Grid item xs={3} key={`${sec.label}-${sceneId}`}>
+                                  <Box
+                                    onClick={() => { setSectionLabel(sec.label); setSelectedSectionImageId(sceneId); }}
+                                    sx={{ aspectRatio: "16/9", borderRadius: 1, overflow: "hidden", cursor: "pointer", "&:hover": { opacity: 0.8 } }}
+                                  >
+                                    <Box component="img" src={url} sx={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                                  </Box>
                                 </Grid>
                               );
                             })}
-                            {sec.image_scene_ids.length > (mainTab === "video" ? 4 : 6) && (
-                              <Grid item xs={mainTab === "video" ? 3 : 2}>
+                            {sec.image_scene_ids.length > 4 && (
+                              <Grid item xs={3}>
                                 <Box
                                   onClick={() => setSectionLabel(sec.label)}
                                   sx={{
-                                    aspectRatio: mainTab === "video" ? "16/9" : "9/16",
+                                    aspectRatio: "16/9",
                                     borderRadius: 1, bgcolor: "rgba(255,255,255,0.04)",
                                     border: "1px dashed rgba(255,255,255,0.12)",
                                     display: "flex", alignItems: "center", justifyContent: "center",
@@ -1400,7 +1278,7 @@ export default function ImageGenPage() {
                                   }}
                                 >
                                   <Typography variant="caption" color="text.disabled">
-                                    +{sec.image_scene_ids.length - (mainTab === "video" ? 4 : 6)} more
+                                    +{sec.image_scene_ids.length - 4} more
                                   </Typography>
                                 </Box>
                               </Grid>
@@ -1422,13 +1300,9 @@ export default function ImageGenPage() {
               <CardContent sx={{ p: 2 }}>
                 <Typography variant="subtitle2" fontWeight={700} sx={{ mb: 1.5 }}>
                   {selectedSectionImageId ? `Scene #${selectedSectionImageId}` : "Preview"}
-                  {mainTab === "short" && selectedSectionImageId && (
-                    <Chip label="9:16 Short" size="small" icon={<ShortTabIcon sx={{ fontSize: "11px !important" }} />}
-                      sx={{ ml: 1, height: 18, fontSize: "0.6rem", bgcolor: "rgba(108,99,255,0.2)", color: "primary.light" }} />
-                  )}
                 </Typography>
 
-                {mainTab === "video" && sectionLabel ? (
+                {sectionLabel ? (
                   <AiNewsPreviewPanel
                     projectId={currentProject.id}
                     label={sectionLabel}
@@ -1442,31 +1316,21 @@ export default function ImageGenPage() {
                         handleSectionSceneRegenerate(sectionLabel, selectedSectionImageId);
                     }}
                   />
-                ) : selectedSectionImageId && sectionLabel && mainTab === "short" ? (
-                  /* Portrait preview */
-                  <Box sx={{ maxWidth: 220, mx: "auto" }}>
-                    <PortraitCard
-                      imageUrl={aiNewsApi.getSectionImageUrl(currentProject.id, sectionLabel, selectedSectionImageId)}
-                      sceneId={selectedSectionImageId}
-                      isSelected={false}
-                      onClick={() => {}}
-                    />
-                  </Box>
                 ) : (
                   <Box sx={{
-                    height: mainTab === "video" ? 160 : 260,
+                    height: 160,
                     display: "flex", alignItems: "center", justifyContent: "center",
                     bgcolor: "rgba(255,255,255,0.02)", borderRadius: 2,
                     border: "1px dashed rgba(255,255,255,0.08)",
                   }}>
                     <Typography variant="caption" color="text.disabled">
-                      {sectionLabel ? "Click an image to preview" : "Select a section tab first"}
+                      Select a section tab first
                     </Typography>
                   </Box>
                 )}
 
                 {/* Section generate shortcut when no images exist yet */}
-                {sectionLabel && !sectionGenerating.has(sectionLabel) && viewIds.length === 0 && selectedSection?.image_prompts && mainTab === "video" && (
+                {sectionLabel && !sectionGenerating.has(sectionLabel) && viewIds.length === 0 && selectedSection?.image_prompts && (
                   <Button
                     fullWidth variant="outlined" size="small"
                     startIcon={<GenerateIcon />}

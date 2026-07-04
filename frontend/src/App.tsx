@@ -9,11 +9,14 @@ import ClipsPage from "./pages/ClipsPage";
 import VoiceGenPage from "./pages/VoiceGenPage";
 import SubtitlePage from "./pages/SubtitlePage";
 import ThumbnailPage from "./pages/ThumbnailPage";
+import BlogPage from "./pages/BlogPage";
 import VideoGenPage from "./pages/VideoGenPage";
 import SettingsPage from "./pages/SettingsPage";
 import ContentGenPage from "./pages/ContentGenPage";
 import AiNewsPage from "./pages/AiNewsPage";
 import AiNewsClipsPage from "./pages/AiNewsClipsPage";
+import AiNewsShotImagesPage from "./pages/AiNewsShotImagesPage";
+import AiNewsShotClipsPage from "./pages/AiNewsShotClipsPage";
 
 export default function App() {
   return (
@@ -26,9 +29,12 @@ export default function App() {
             <Route path="/images" element={<ImageGenPage />} />
             <Route path="/clips" element={<ClipsPage />} />
             <Route path="/ai-news-clips" element={<AiNewsClipsPage />} />
+            <Route path="/shot-images" element={<AiNewsShotImagesPage />} />
+            <Route path="/shot-clips" element={<AiNewsShotClipsPage />} />
             <Route path="/voice" element={<VoiceGenPage />} />
             <Route path="/subtitles" element={<SubtitlePage />} />
             <Route path="/thumbnail" element={<ThumbnailPage />} />
+            <Route path="/blog" element={<BlogPage />} />
             <Route path="/video" element={<VideoGenPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="/content" element={<Navigate to="/content/trends" replace />} />

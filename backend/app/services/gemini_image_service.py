@@ -48,7 +48,7 @@ class GeminiImageService:
         if self.progress_callback:
             await self.progress_callback(progress, message, data or {})
 
-    async def _generate_async(self, prompt: str) -> bytes:
+    async def _generate_async(self, prompt: str, vertical: bool = False) -> bytes:
         """Returns raw PNG bytes. Detects Imagen vs Gemini model and uses the right API."""
         from google import genai as google_genai
         from google.genai import types as gtypes
@@ -63,7 +63,7 @@ class GeminiImageService:
                     prompt=prompt,
                     config=gtypes.GenerateImagesConfig(
                         number_of_images=1,
-                        aspect_ratio="16:9",
+                        aspect_ratio="9:16" if vertical else "16:9",
                         output_mime_type="image/png",
                     ),
                 ),
@@ -75,11 +75,16 @@ class GeminiImageService:
                     return bytes(raw) if not isinstance(raw, bytes) else raw
             raise RuntimeError(f"Imagen model '{self.model}' returned no image bytes")
 
-        # Gemini multimodal image generation (gemini-* models)
+        # Gemini multimodal image generation (gemini-* models) — no aspect_ratio config
+        # exists for this API, so hint portrait orientation directly in the prompt.
+        gemini_prompt = (
+            f"{prompt}, vertical 9:16 portrait orientation, full-bleed vertical composition"
+            if vertical else prompt
+        )
         response = await asyncio.wait_for(
             client.aio.models.generate_content(
                 model=self.model,
-                contents=prompt,
+                contents=gemini_prompt,
                 config=gtypes.GenerateContentConfig(
                     response_modalities=["IMAGE", "TEXT"],
                 ),
@@ -99,11 +104,11 @@ class GeminiImageService:
             "Go to Settings → Gemini AI → click 'Fetch' to discover available image models."
         )
 
-    async def generate_scene(self, scene_id: int, prompt: str) -> dict:
+    async def generate_scene(self, scene_id: int, prompt: str, vertical: bool = False) -> dict:
         """Generate one scene image. Returns result dict."""
         await self._rate_limit()
         logger.info("Generating scene %d via Gemini (%s)…", scene_id, self.model)
-        image_bytes = await self._generate_async(prompt)
+        image_bytes = await self._generate_async(prompt, vertical=vertical)
         filename = f"scene_{scene_id:03d}.png"
         dest = self.images_dir / filename
         dest.write_bytes(image_bytes)
@@ -113,11 +118,13 @@ class GeminiImageService:
         self,
         section_label: str,
         section_prompts_path: "Path",
+        vertical: bool = False,
     ) -> dict:
         """Generate Gemini images for one AI News section.
 
         Reads prompts from section_prompts_path.
-        Saves images to images/sections/{label}/scene_NNN.png.
+        Saves images to images/sections/{label}/scene_NNN.png, or
+        images/sections/{label}/vertical/scene_NNN.png when vertical=True.
         """
         from pathlib import Path as _Path
         if not section_prompts_path.exists():
@@ -142,6 +149,8 @@ class GeminiImageService:
             raise RuntimeError(f"No prompts in {section_label}/image_prompts.txt")
 
         sec_images_dir = self.images_dir / "sections" / section_label
+        if vertical:
+            sec_images_dir = sec_images_dir / "vertical"
         sec_images_dir.mkdir(parents=True, exist_ok=True)
 
         original_images_dir = self.images_dir
@@ -168,7 +177,7 @@ class GeminiImageService:
                     {"scene_id": scene_id},
                 )
                 try:
-                    await self.generate_scene(scene_id, prompt)
+                    await self.generate_scene(scene_id, prompt, vertical=vertical)
                     generated += 1
                     await self._report(
                         generated / total * 100,
@@ -182,7 +191,7 @@ class GeminiImageService:
             self.images_dir = original_images_dir
 
         await self._report(100, f"Section '{section_label}' images done — {generated}/{total}")
-        return {"label": section_label, "total": total, "generated": generated, "errors": errors}
+        return {"label": section_label, "vertical": vertical, "total": total, "generated": generated, "errors": errors}
 
     async def generate_all(self, prompts: List[str]) -> dict:
         """Generate images for all prompts sequentially with rate limiting and resume support."""

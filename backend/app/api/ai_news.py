@@ -62,6 +62,15 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Shot (9:16) content — vertical images, vertical LTX clips, and the final shot
+# video — is only generated for story sections. Intro, agenda, and outro never
+# get shot content.
+_NO_SHOT_LABELS = {"intro", "agenda", "outro"}
+
+
+def _is_no_shot_label(label: str) -> bool:
+    return label in _NO_SHOT_LABELS
+
 
 class NewsStory(BaseModel):
     title: str
@@ -300,29 +309,64 @@ async def get_sections_status(
         lbl = s["label"]
         s_type = s["type"]
         is_agenda = s_type == "agenda"
+        # No shot (9:16) content for intro, agenda, or outro — only story sections
+        # get vertical images / vertical LTX / shot videos.
+        is_no_shot = s_type in ("agenda", "intro", "outro")
 
         def _ex(*parts: str) -> bool:
             return Path(*parts).exists()
 
         sec_input   = input_dir / "sections" / lbl
         sec_images  = project_dir / "images" / "sections" / lbl
+        sec_images_vertical = sec_images / "vertical"
         shorts_dir2 = project_dir / "output" / "ai_news_shorts"
         ltx_clips_dir = project_dir / "clips" / "sections" / lbl
+        ltx_clips_vertical_dir = ltx_clips_dir / "vertical"
+
+        # Expected scene count from scenes.json — used so has_ltx / has_vertical_ltx
+        # only report "done" once EVERY scene has a clip, not just at least one.
+        # Without this, a section where only scene 1 succeeded (the rest failed on
+        # ComfyUI) would still show a misleading "LTX ✓" complete checkmark.
+        expected_scenes = 0
+        scenes_json_path = sec_input / "scenes.json"
+        if scenes_json_path.exists():
+            try:
+                expected_scenes = len(json.loads(scenes_json_path.read_text(encoding="utf-8")))
+            except Exception:
+                expected_scenes = 0
+
+        ltx_clip_count = len(list(ltx_clips_dir.glob("scene_*.mp4"))) if ltx_clips_dir.exists() else 0
+        vertical_ltx_clip_count = (
+            len(list(ltx_clips_vertical_dir.glob("scene_*.mp4"))) if ltx_clips_vertical_dir.exists() else 0
+        )
         has_ltx = (
-            ltx_clips_dir.exists()
-            and any(ltx_clips_dir.glob("scene_*.mp4"))
-            and not is_agenda
+            not is_agenda
+            and expected_scenes > 0
+            and ltx_clip_count >= expected_scenes
+        )
+        has_vertical_ltx = (
+            not is_no_shot
+            and expected_scenes > 0
+            and vertical_ltx_clip_count >= expected_scenes
         )
         result.append({
             **s,
             "has_scenes":        _ex(str(sec_input), "scenes.json") if not is_agenda else None,
             "has_image_prompts": _ex(str(sec_input), "image_prompts.txt") if not is_agenda else None,
             "has_images":        any(sec_images.glob("scene_*.png")) if sec_images.exists() and not is_agenda else (None if is_agenda else False),
+            "has_vertical_images": (
+                None if is_no_shot
+                else any(sec_images_vertical.glob("scene_*.png")) if sec_images_vertical.exists() else False
+            ),
             "has_voice":         _ex(str(audio_dir / "sections" / lbl), "narration.wav"),
             "has_subtitles":     _ex(str(sub_dir / "sections" / lbl), "subtitles.srt"),
             "has_clip":          _ex(str(clips_dir / f"{lbl}.mp4")),
-            "has_short":         _ex(str(shorts_dir2 / f"{lbl}.mp4")),
+            "has_short":         False if is_no_shot else _ex(str(shorts_dir2 / f"{lbl}.mp4")),
             "has_ltx":           has_ltx,
+            "has_vertical_ltx":  has_vertical_ltx,
+            "ltx_scene_count":            ltx_clip_count,
+            "vertical_ltx_scene_count":   vertical_ltx_clip_count,
+            "ltx_expected_scenes":        expected_scenes,
         })
 
     return result
@@ -537,7 +581,152 @@ async def delete_all_section_images(
     sections_img_dir = project_dir / "images" / "sections"
     deleted = 0
     if sections_img_dir.exists():
-        for f in sections_img_dir.rglob("scene_*.png"):
+        # Top-level only — leaves the nested vertical/ shot-image set untouched.
+        for sec_dir in sections_img_dir.iterdir():
+            if not sec_dir.is_dir():
+                continue
+            for f in sec_dir.glob("scene_*.png"):
+                f.unlink()
+                deleted += 1
+
+    return {"status": "deleted", "deleted_files": deleted}
+
+
+@router.post("/{project_id}/sections/{label}/images/vertical")
+async def generate_section_images_vertical(
+    project_id: str,
+    label: str,
+    background_tasks: BackgroundTasks,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+    settings_repo: SettingsRepository = Depends(get_settings_repo),
+):
+    """Generate 9:16 (1080x1920) images for one AI News section's shot video.
+
+    Reads  input/sections/{label}/image_prompts.txt
+    Saves  images/sections/{label}/vertical/scene_NNN.png
+
+    Fully separate from the 16:9 images used by the section clip — the shot
+    video gets its own native-vertical image set instead of a blurred/padded
+    crop of the horizontal images.
+    """
+    if _is_no_shot_label(label):
+        raise HTTPException(status_code=400, detail=f"Section '{label}' does not get shot (9:16) content.")
+
+    project = await project_repo.get_by_id(project_id)
+    if not project:
+        raise ProjectNotFoundError(project_id)
+
+    project_dir = (
+        Path(project.project_dir) if project.project_dir else Path(f"projects/{project_id}")
+    )
+    prompts_path = project_dir / "input" / "sections" / label / "image_prompts.txt"
+    if not prompts_path.exists():
+        raise HTTPException(
+            status_code=400,
+            detail=f"image_prompts.txt not found for section '{label}' — generate section content first.",
+        )
+
+    gemini = await settings_repo.get_gemini_settings()
+    image_backend = (gemini.image_backend or "flux").lower()
+
+    async def progress_cb(progress: float, message: str, data: dict) -> None:
+        await connection_manager.broadcast_to_project(
+            project_id, "job_progress",
+            {"job_type": "section_images_vertical", "section": label,
+             "progress": progress, "message": message, **data},
+        )
+
+    async def run() -> None:
+        try:
+            await connection_manager.broadcast_to_project(
+                project_id, "job_progress",
+                {"job_type": "section_images_vertical", "section": label,
+                 "progress": 0, "message": f"Generating vertical images for section '{label}'…"},
+            )
+            if image_backend == "gemini":
+                if not gemini.api_key:
+                    raise HTTPException(status_code=400, detail="Gemini API key not configured.")
+                from app.services.gemini_image_service import GeminiImageService
+                svc: Any = GeminiImageService(
+                    project_id=project_id,
+                    project_dir=project_dir,
+                    api_key=gemini.api_key,
+                    model=gemini.image_model,
+                    progress_callback=progress_cb,
+                )
+            else:
+                from app.services.image_service import ImageGenerationService
+                flux_settings = await settings_repo.get_flux_settings()
+                svc = ImageGenerationService(
+                    project_id=project_id,
+                    project_dir=project_dir,
+                    comfyui_url=flux_settings.comfyui_url or "http://127.0.0.1:8188",
+                    flux_settings={
+                        "steps":     flux_settings.steps,
+                        "cfg":       flux_settings.cfg,
+                        "width":     flux_settings.width,
+                        "height":    flux_settings.height,
+                        "sampler":   flux_settings.sampler,
+                        "scheduler": flux_settings.scheduler,
+                    },
+                    progress_callback=progress_cb,
+                )
+            result = await svc.generate_section_images(label, prompts_path, vertical=True)
+            await connection_manager.broadcast_to_project(
+                project_id, "job_completed",
+                {"job_type": "section_images_vertical", "section": label, "result": result},
+            )
+        except Exception as exc:
+            await connection_manager.broadcast_to_project(
+                project_id, "job_failed",
+                {"job_type": "section_images_vertical", "section": label, "error": str(exc)},
+            )
+
+    background_tasks.add_task(run)
+    return {"status": "started", "message": f"Vertical image generation started for section '{label}'"}
+
+
+@router.delete("/{project_id}/sections/{label}/images/vertical")
+async def delete_section_images_vertical(
+    project_id: str,
+    label: str,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+):
+    """Delete the generated 9:16 shot images for one AI News section."""
+    project = await project_repo.get_by_id(project_id)
+    if not project:
+        raise ProjectNotFoundError(project_id)
+
+    project_dir = (
+        Path(project.project_dir) if project.project_dir else Path(f"projects/{project_id}")
+    )
+    img_dir = project_dir / "images" / "sections" / label / "vertical"
+    deleted = 0
+    if img_dir.exists():
+        for f in img_dir.glob("scene_*.png"):
+            f.unlink()
+            deleted += 1
+
+    return {"status": "deleted", "deleted_files": deleted, "label": label}
+
+
+@router.delete("/{project_id}/sections/images/vertical/all")
+async def delete_all_section_images_vertical(
+    project_id: str,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+):
+    """Delete all generated 9:16 shot images across every AI News section."""
+    project = await project_repo.get_by_id(project_id)
+    if not project:
+        raise ProjectNotFoundError(project_id)
+
+    project_dir = (
+        Path(project.project_dir) if project.project_dir else Path(f"projects/{project_id}")
+    )
+    sections_img_dir = project_dir / "images" / "sections"
+    deleted = 0
+    if sections_img_dir.exists():
+        for f in sections_img_dir.glob("*/vertical/scene_*.png"):
             f.unlink()
             deleted += 1
 
@@ -651,6 +840,125 @@ async def upload_section_image(
         Path(project.project_dir) if project.project_dir else Path(f"projects/{project_id}")
     )
     img_dir = project_dir / "images" / "sections" / label
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    dest = img_dir / f"scene_{scene_id:03d}.png"
+    content = await file.read()
+    dest.write_bytes(content)
+
+    return {"status": "uploaded", "path": str(dest)}
+
+
+@router.post("/{project_id}/sections/{label}/images/vertical/{scene_id}/regenerate")
+async def regenerate_section_image_vertical(
+    project_id: str,
+    label: str,
+    scene_id: int,
+    background_tasks: BackgroundTasks,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+    settings_repo: SettingsRepository = Depends(get_settings_repo),
+):
+    """Delete one vertical shot scene image and regenerate it (9:16)."""
+    if _is_no_shot_label(label):
+        raise HTTPException(status_code=400, detail=f"Section '{label}' does not get shot (9:16) content.")
+
+    project = await project_repo.get_by_id(project_id)
+    if not project:
+        raise ProjectNotFoundError(project_id)
+
+    project_dir = (
+        Path(project.project_dir) if project.project_dir else Path(f"projects/{project_id}")
+    )
+    prompts_path = project_dir / "input" / "sections" / label / "image_prompts.txt"
+    if not prompts_path.exists():
+        raise HTTPException(
+            status_code=400,
+            detail=f"image_prompts.txt not found for section '{label}'",
+        )
+
+    img_path = project_dir / "images" / "sections" / label / "vertical" / f"scene_{scene_id:03d}.png"
+    if img_path.exists():
+        img_path.unlink()
+
+    gemini = await settings_repo.get_gemini_settings()
+    image_backend = (gemini.image_backend or "flux").lower()
+
+    async def progress_cb(progress: float, message: str, data: dict) -> None:
+        await connection_manager.broadcast_to_project(
+            project_id, "job_progress",
+            {"job_type": "section_image_vertical_regen", "section": label, "scene_id": scene_id,
+             "progress": progress, "message": message, **data},
+        )
+
+    async def run() -> None:
+        try:
+            await connection_manager.broadcast_to_project(
+                project_id, "job_progress",
+                {"job_type": "section_image_vertical_regen", "section": label, "scene_id": scene_id,
+                 "progress": 0, "message": f"Regenerating vertical scene {scene_id} in '{label}'…"},
+            )
+            if image_backend == "gemini":
+                if not gemini.api_key:
+                    raise HTTPException(status_code=400, detail="Gemini API key not configured.")
+                from app.services.gemini_image_service import GeminiImageService
+                svc: Any = GeminiImageService(
+                    project_id=project_id,
+                    project_dir=project_dir,
+                    api_key=gemini.api_key,
+                    model=gemini.image_model,
+                    progress_callback=progress_cb,
+                )
+            else:
+                from app.services.image_service import ImageGenerationService
+                flux_settings = await settings_repo.get_flux_settings()
+                svc = ImageGenerationService(
+                    project_id=project_id,
+                    project_dir=project_dir,
+                    comfyui_url=flux_settings.comfyui_url or "http://127.0.0.1:8188",
+                    flux_settings={
+                        "steps":     flux_settings.steps,
+                        "cfg":       flux_settings.cfg,
+                        "width":     flux_settings.width,
+                        "height":    flux_settings.height,
+                        "sampler":   flux_settings.sampler,
+                        "scheduler": flux_settings.scheduler,
+                    },
+                    progress_callback=progress_cb,
+                )
+            result = await svc.generate_section_images(label, prompts_path, vertical=True)
+            await connection_manager.broadcast_to_project(
+                project_id, "job_completed",
+                {"job_type": "section_image_vertical_regen", "section": label, "scene_id": scene_id,
+                 "result": result},
+            )
+        except Exception as exc:
+            await connection_manager.broadcast_to_project(
+                project_id, "job_failed",
+                {"job_type": "section_image_vertical_regen", "section": label, "scene_id": scene_id,
+                 "error": str(exc)},
+            )
+
+    background_tasks.add_task(run)
+    return {"status": "started", "message": f"Regenerating vertical scene {scene_id} in section '{label}'"}
+
+
+@router.post("/{project_id}/sections/{label}/images/vertical/{scene_id}/upload")
+async def upload_section_image_vertical(
+    project_id: str,
+    label: str,
+    scene_id: int,
+    file: UploadFile = File(...),
+    project_repo: ProjectRepository = Depends(get_project_repo),
+):
+    """Upload a replacement vertical (9:16) image for one section scene."""
+    project = await project_repo.get_by_id(project_id)
+    if not project:
+        raise ProjectNotFoundError(project_id)
+
+    project_dir = (
+        Path(project.project_dir) if project.project_dir else Path(f"projects/{project_id}")
+    )
+    img_dir = project_dir / "images" / "sections" / label / "vertical"
     img_dir.mkdir(parents=True, exist_ok=True)
 
     dest = img_dir / f"scene_{scene_id:03d}.png"
@@ -1327,6 +1635,9 @@ async def generate_section_short(
     Optional body: { narrator_text, logo_path }
     Output: output/ai_news_shorts/{label}.mp4
     """
+    if _is_no_shot_label(label):
+        raise HTTPException(status_code=400, detail=f"Section '{label}' does not get shot (9:16) content.")
+
     project = await project_repo.get_by_id(project_id)
     if not project:
         raise ProjectNotFoundError(project_id)
@@ -1794,11 +2105,27 @@ async def generate_section_ltx(
                 "message": f"Starting LTX generation for section '{label}'",
             })
             result = await svc.generate_section(label)
-            await connection_manager.broadcast_to_project(project_id, "job_completed", {
-                "job_type": "section_ltx",
-                "section": label,
-                "message": f"LTX generation complete for '{label}': {result['animated']}/{result['total']} clips",
-            })
+            failed = result.get("failed") or []
+            if failed:
+                # generate_section() catches per-scene errors internally and always
+                # returns normally — without this, a section where only scene 1
+                # succeeded (the rest erroring on ComfyUI) would broadcast
+                # job_completed and look fully done in the UI.
+                first = failed[0]
+                await connection_manager.broadcast_to_project(project_id, "job_failed", {
+                    "job_type": "section_ltx",
+                    "section": label,
+                    "error": (
+                        f"{len(failed)}/{result['total']} scenes failed "
+                        f"(scene {first['scene_id']}: {first['error']})"
+                    ),
+                })
+            else:
+                await connection_manager.broadcast_to_project(project_id, "job_completed", {
+                    "job_type": "section_ltx",
+                    "section": label,
+                    "message": f"LTX generation complete for '{label}': {result['animated']}/{result['total']} clips",
+                })
         except _asyncio.CancelledError:
             pass
         except Exception as exc:
@@ -1866,10 +2193,24 @@ async def generate_all_sections_ltx(
                 "message": "Starting LTX generation for all sections",
             })
             result = await svc.generate_all_sections()
-            await connection_manager.broadcast_to_project(project_id, "job_completed", {
-                "job_type": "section_ltx_all",
-                "message": f"All-sections LTX complete: {result['total_sections']} sections processed",
-            })
+            sec_results = result.get("sections") or {}
+            failed_scenes = sum(len(r.get("failed") or []) for r in sec_results.values() if isinstance(r, dict))
+            errored_sections = [lbl for lbl, r in sec_results.items() if isinstance(r, dict) and r.get("error")]
+            if failed_scenes or errored_sections:
+                parts = []
+                if failed_scenes:
+                    parts.append(f"{failed_scenes} scene(s) failed")
+                if errored_sections:
+                    parts.append(f"sections with errors: {', '.join(errored_sections)}")
+                await connection_manager.broadcast_to_project(project_id, "job_failed", {
+                    "job_type": "section_ltx_all",
+                    "error": "; ".join(parts),
+                })
+            else:
+                await connection_manager.broadcast_to_project(project_id, "job_completed", {
+                    "job_type": "section_ltx_all",
+                    "message": f"All-sections LTX complete: {result['total_sections']} sections processed",
+                })
         except _asyncio.CancelledError:
             pass
         except Exception as exc:
@@ -1906,6 +2247,322 @@ async def delete_section_ltx(
             deleted += 1
 
     return {"status": "deleted", "deleted_files": deleted, "label": label}
+
+
+@router.post("/{project_id}/sections/{label}/ltx/vertical")
+async def generate_section_ltx_vertical(
+    project_id: str,
+    label: str,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+    settings_repo: SettingsRepository = Depends(get_settings_repo),
+):
+    """Animate the 9:16 shot images for one section into native-vertical LTX clips.
+
+    Reads  images/sections/{label}/vertical/scene_NNN.png
+    Writes clips/sections/{label}/vertical/scene_NNN.mp4 (video-only, 1080x1920)
+
+    Fully separate LTX pass from the 16:9 section clip animation.
+    """
+    import asyncio as _asyncio
+
+    if _is_no_shot_label(label):
+        raise HTTPException(status_code=400, detail=f"Section '{label}' does not get shot (9:16) content.")
+
+    project = await project_repo.get_by_id(project_id)
+    if not project:
+        raise ProjectNotFoundError(project_id)
+
+    project_dir = (
+        Path(project.project_dir) if project.project_dir else Path(f"projects/{project_id}")
+    )
+
+    images_dir = project_dir / "images" / "sections" / label / "vertical"
+    if not images_dir.exists() or not any(images_dir.glob("scene_*.png")):
+        raise HTTPException(
+            status_code=400,
+            detail=f"No vertical scene images found for section '{label}'. Generate vertical images first.",
+        )
+
+    task_key = f"{project_id}:{label}:vertical"
+    existing = _ltx_tasks.get(task_key)
+    if existing and not existing.done():
+        return {"status": "already_running", "message": f"Vertical LTX generation for '{label}' is already in progress"}
+
+    flux_settings = await settings_repo.get_flux_settings()
+    comfyui_url = flux_settings.comfyui_url or "http://127.0.0.1:8188"
+
+    async def _progress_cb(pct: float, msg: str, data: dict):
+        await connection_manager.broadcast_to_project(project_id, "ltx_progress", {
+            "job_type": "section_ltx_vertical",
+            "section": label,
+            "progress": pct,
+            "message": msg,
+            **(data or {}),
+        })
+
+    from app.services.ltx_comfy_service import AiNewsLTXService
+    svc = AiNewsLTXService(
+        project_id=project_id,
+        project_dir=project_dir,
+        comfyui_url=comfyui_url,
+        width=1080,
+        height=1920,
+        progress_callback=_progress_cb,
+    )
+
+    async def _run():
+        try:
+            await connection_manager.broadcast_to_project(project_id, "job_started", {
+                "job_type": "section_ltx_vertical",
+                "section": label,
+                "message": f"Starting vertical LTX generation for section '{label}'",
+            })
+            result = await svc.generate_section(label, vertical=True)
+            failed = result.get("failed") or []
+            if failed:
+                first = failed[0]
+                await connection_manager.broadcast_to_project(project_id, "job_failed", {
+                    "job_type": "section_ltx_vertical",
+                    "section": label,
+                    "error": (
+                        f"{len(failed)}/{result['total']} scenes failed "
+                        f"(scene {first['scene_id']}: {first['error']})"
+                    ),
+                })
+            else:
+                await connection_manager.broadcast_to_project(project_id, "job_completed", {
+                    "job_type": "section_ltx_vertical",
+                    "section": label,
+                    "message": f"Vertical LTX generation complete for '{label}': {result['animated']}/{result['total']} clips",
+                })
+        except _asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            await connection_manager.broadcast_to_project(project_id, "job_failed", {
+                "job_type": "section_ltx_vertical",
+                "section": label,
+                "error": str(exc),
+            })
+
+    task = _asyncio.create_task(_run())
+    _ltx_tasks[task_key] = task
+
+    return {"status": "started", "message": f"Vertical LTX generation started for section '{label}'"}
+
+
+@router.post("/{project_id}/sections/ltx/vertical/generate-all")
+async def generate_all_sections_ltx_vertical(
+    project_id: str,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+    settings_repo: SettingsRepository = Depends(get_settings_repo),
+):
+    """Animate the 9:16 shot images into native-vertical LTX clips for every section that has one."""
+    import asyncio as _asyncio
+    from app.services.ltx_comfy_service import AiNewsLTXService
+
+    project = await project_repo.get_by_id(project_id)
+    if not project:
+        raise ProjectNotFoundError(project_id)
+
+    project_dir = (
+        Path(project.project_dir) if project.project_dir else Path(f"projects/{project_id}")
+    )
+
+    sections_root = project_dir / "images" / "sections"
+    if not sections_root.exists():
+        raise HTTPException(status_code=400, detail="No section images found. Generate vertical images first.")
+
+    task_key = f"{project_id}:all:vertical"
+    existing = _ltx_tasks.get(task_key)
+    if existing and not existing.done():
+        return {"status": "already_running", "message": "All-sections vertical LTX generation is already running"}
+
+    flux_settings = await settings_repo.get_flux_settings()
+    comfyui_url = flux_settings.comfyui_url or "http://127.0.0.1:8188"
+
+    async def _all_progress_cb(pct: float, msg: str, data: dict):
+        await connection_manager.broadcast_to_project(project_id, "ltx_progress", {
+            "job_type": "section_ltx_vertical_all",
+            "progress": pct,
+            "message": msg,
+            **(data or {}),
+        })
+
+    svc = AiNewsLTXService(
+        project_id=project_id,
+        project_dir=project_dir,
+        comfyui_url=comfyui_url,
+        width=1080,
+        height=1920,
+        progress_callback=_all_progress_cb,
+    )
+
+    async def _run_all():
+        try:
+            await connection_manager.broadcast_to_project(project_id, "job_started", {
+                "job_type": "section_ltx_vertical_all",
+                "message": "Starting vertical LTX generation for all sections",
+            })
+            result = await svc.generate_all_sections(vertical=True)
+            sec_results = result.get("sections") or {}
+            failed_scenes = sum(len(r.get("failed") or []) for r in sec_results.values() if isinstance(r, dict))
+            errored_sections = [lbl for lbl, r in sec_results.items() if isinstance(r, dict) and r.get("error")]
+            if failed_scenes or errored_sections:
+                parts = []
+                if failed_scenes:
+                    parts.append(f"{failed_scenes} scene(s) failed")
+                if errored_sections:
+                    parts.append(f"sections with errors: {', '.join(errored_sections)}")
+                await connection_manager.broadcast_to_project(project_id, "job_failed", {
+                    "job_type": "section_ltx_vertical_all",
+                    "error": "; ".join(parts),
+                })
+            else:
+                await connection_manager.broadcast_to_project(project_id, "job_completed", {
+                    "job_type": "section_ltx_vertical_all",
+                    "message": f"All-sections vertical LTX complete: {result['total_sections']} sections processed",
+                })
+        except _asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            await connection_manager.broadcast_to_project(project_id, "job_failed", {
+                "job_type": "section_ltx_vertical_all",
+                "error": str(exc),
+            })
+
+    task = _asyncio.create_task(_run_all())
+    _ltx_tasks[task_key] = task
+
+    return {"status": "started", "message": "Vertical LTX generation started for all sections"}
+
+
+@router.delete("/{project_id}/sections/{label}/ltx/vertical")
+async def delete_section_ltx_vertical(
+    project_id: str,
+    label: str,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+):
+    """Delete the vertical LTX clips for one AI News section."""
+    project = await project_repo.get_by_id(project_id)
+    if not project:
+        raise ProjectNotFoundError(project_id)
+
+    project_dir = (
+        Path(project.project_dir) if project.project_dir else Path(f"projects/{project_id}")
+    )
+    ltx_dir = project_dir / "clips" / "sections" / label / "vertical"
+    deleted = 0
+    if ltx_dir.exists():
+        for f in ltx_dir.glob("scene_*.mp4"):
+            f.unlink(missing_ok=True)
+            deleted += 1
+
+    return {"status": "deleted", "deleted_files": deleted, "label": label}
+
+
+def _list_scene_clips(clips_dir: Path) -> List[Dict[str, Any]]:
+    """Return sorted {scene_id, filename, size_mb} for scene_NNN.mp4 files in a directory."""
+    if not clips_dir.exists():
+        return []
+    scenes = []
+    for f in sorted(clips_dir.glob("scene_*.mp4")):
+        try:
+            scene_id = int(f.stem.split("_")[1])
+        except (IndexError, ValueError):
+            continue
+        scenes.append({
+            "scene_id": scene_id,
+            "filename": f.name,
+            "size_mb": round(f.stat().st_size / (1024 * 1024), 2),
+        })
+    scenes.sort(key=lambda s: s["scene_id"])
+    return scenes
+
+
+@router.get("/{project_id}/sections/{label}/ltx/scenes")
+async def list_section_ltx_scenes(
+    project_id: str,
+    label: str,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+):
+    """List the per-scene 16:9 LTX clips generated for one section."""
+    project = await project_repo.get_by_id(project_id)
+    if not project:
+        raise ProjectNotFoundError(project_id)
+
+    project_dir = (
+        Path(project.project_dir) if project.project_dir else Path(f"projects/{project_id}")
+    )
+    scenes = _list_scene_clips(project_dir / "clips" / "sections" / label)
+    return {"label": label, "scenes": scenes}
+
+
+@router.get("/{project_id}/sections/{label}/ltx/vertical/scenes")
+async def list_section_ltx_vertical_scenes(
+    project_id: str,
+    label: str,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+):
+    """List the per-scene 9:16 vertical LTX clips generated for one section."""
+    project = await project_repo.get_by_id(project_id)
+    if not project:
+        raise ProjectNotFoundError(project_id)
+
+    project_dir = (
+        Path(project.project_dir) if project.project_dir else Path(f"projects/{project_id}")
+    )
+    scenes = _list_scene_clips(project_dir / "clips" / "sections" / label / "vertical")
+    return {"label": label, "scenes": scenes}
+
+
+@router.get("/{project_id}/sections/{label}/ltx/scene/{scene_id}")
+async def get_section_ltx_scene(
+    project_id: str,
+    label: str,
+    scene_id: int,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+):
+    """Serve one per-scene 16:9 LTX clip (clips/sections/{label}/scene_NNN.mp4)."""
+    project = await project_repo.get_by_id(project_id)
+    if not project:
+        raise ProjectNotFoundError(project_id)
+
+    project_dir = (
+        Path(project.project_dir) if project.project_dir else Path(f"projects/{project_id}")
+    )
+    clip_path = project_dir / "clips" / "sections" / label / f"scene_{scene_id:03d}.mp4"
+    if not clip_path.exists():
+        raise HTTPException(status_code=404, detail=f"LTX scene clip not found: {label}/scene_{scene_id:03d}.mp4")
+
+    return FileResponse(
+        str(clip_path), media_type="video/mp4",
+        headers={"Cache-Control": "max-age=3600"},
+    )
+
+
+@router.get("/{project_id}/sections/{label}/ltx/vertical/scene/{scene_id}")
+async def get_section_ltx_vertical_scene(
+    project_id: str,
+    label: str,
+    scene_id: int,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+):
+    """Serve one per-scene 9:16 vertical LTX clip (clips/sections/{label}/vertical/scene_NNN.mp4)."""
+    project = await project_repo.get_by_id(project_id)
+    if not project:
+        raise ProjectNotFoundError(project_id)
+
+    project_dir = (
+        Path(project.project_dir) if project.project_dir else Path(f"projects/{project_id}")
+    )
+    clip_path = project_dir / "clips" / "sections" / label / "vertical" / f"scene_{scene_id:03d}.mp4"
+    if not clip_path.exists():
+        raise HTTPException(status_code=404, detail=f"Vertical LTX scene clip not found: {label}/scene_{scene_id:03d}.mp4")
+
+    return FileResponse(
+        str(clip_path), media_type="video/mp4",
+        headers={"Cache-Control": "max-age=3600"},
+    )
 
 
 @router.get("/{project_id}/sections/content")
@@ -2152,6 +2809,12 @@ async def get_sections_content(
             for f in sec_imgs.glob("scene_*.png")
         ) if sec_imgs.exists() else []
 
+        sec_imgs_vertical = sec_imgs / "vertical"
+        vertical_image_ids = sorted(
+            int(f.stem.rsplit("_", 1)[-1])
+            for f in sec_imgs_vertical.glob("scene_*.png")
+        ) if sec_imgs_vertical.exists() else []
+
         voice_ids = sorted(
             int(f.stem.rsplit("_", 1)[-1])
             for f in sec_aud.glob("scene_*.wav")
@@ -2166,6 +2829,7 @@ async def get_sections_content(
             "image_prompts":   _read(sec_input / "image_prompts.txt"),
             "subtitle_srt":    _read(sec_subs  / "subtitles.srt"),
             "image_scene_ids": image_ids,
+            "vertical_image_scene_ids": vertical_image_ids,
             "voice_scene_ids": voice_ids,
             "has_narration":   (sec_aud / "narration.wav").exists(),
             "script_text":     sec.get("script"),   # raw section script from script.md
@@ -2192,6 +2856,29 @@ async def get_section_image(
     img_path = project_dir / "images" / "sections" / label / f"scene_{scene_id:03d}.png"
     if not img_path.exists():
         raise HTTPException(status_code=404, detail=f"Section image not found: {label}/scene_{scene_id:03d}.png")
+
+    return FileResponse(str(img_path), media_type="image/png",
+                        headers={"Cache-Control": "max-age=3600"})
+
+
+@router.get("/{project_id}/sections/{label}/media/image/vertical/{scene_id}")
+async def get_section_image_vertical(
+    project_id: str,
+    label: str,
+    scene_id: int,
+    project_repo: ProjectRepository = Depends(get_project_repo),
+):
+    """Serve images/sections/{label}/vertical/scene_{scene_id:03d}.png"""
+    project = await project_repo.get_by_id(project_id)
+    if not project:
+        raise ProjectNotFoundError(project_id)
+
+    project_dir = (
+        Path(project.project_dir) if project.project_dir else Path(f"projects/{project_id}")
+    )
+    img_path = project_dir / "images" / "sections" / label / "vertical" / f"scene_{scene_id:03d}.png"
+    if not img_path.exists():
+        raise HTTPException(status_code=404, detail=f"Vertical section image not found: {label}/scene_{scene_id:03d}.png")
 
     return FileResponse(str(img_path), media_type="image/png",
                         headers={"Cache-Control": "max-age=3600"})

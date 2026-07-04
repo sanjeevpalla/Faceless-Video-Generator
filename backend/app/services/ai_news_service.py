@@ -243,9 +243,9 @@ class AiNewsService(ContentGenerationService):
         if not self._is_english():
             prompt += (
                 f"\n\nLANGUAGE REQUIREMENT: Write ALL [NARRATOR] narration entirely in {self._lang_name()}. "
-                f"Also translate every 'SECTION N: {{title}}' heading into {self._lang_name()} — "
-                "these titles are shown on-screen (agenda/title cards), so they must match the "
-                "narration language, not stay in English. "
+                "Keep every 'SECTION N: {title}' heading in ENGLISH — these titles are shown on-screen "
+                "as the agenda card and per-story title cards, and must stay in English regardless of "
+                "the narration language. "
                 "[VISUAL] descriptions MUST remain in English (used for image generation). "
                 "Do not mix languages within any narration block."
             )

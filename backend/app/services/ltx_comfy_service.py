@@ -801,12 +801,18 @@ class AiNewsLTXService(LTXComfyService):
             prompts = [ln.strip() for ln in content.splitlines() if ln.strip()]
         return prompts
 
-    async def generate_section(self, label: str) -> Dict[str, Any]:
+    async def generate_section(self, label: str, vertical: bool = False) -> Dict[str, Any]:
         """Animate all scene images in one section label → clips/sections/{label}/.
+
+        When vertical=True, reads images/sections/{label}/vertical/ (9:16 images
+        generated for shot videos) and writes clips/sections/{label}/vertical/
+        instead — a fully separate LTX animation pass from the 16:9 section clip.
 
         Skips scenes that already have a clip (resume-safe).
         """
         images_dir = self.project_dir / "images" / "sections" / label
+        if vertical:
+            images_dir = images_dir / "vertical"
         if not images_dir.exists():
             raise ServiceError(self.service_name, f"No images directory for section '{label}'")
 
@@ -815,6 +821,8 @@ class AiNewsLTXService(LTXComfyService):
             raise ServiceError(self.service_name, f"No scene images for section '{label}'")
 
         out_dir = self.project_dir / "clips" / "sections" / label
+        if vertical:
+            out_dir = out_dir / "vertical"
         out_dir.mkdir(parents=True, exist_ok=True)
 
         image_prompts = self._read_section_prompts(label)
@@ -823,7 +831,8 @@ class AiNewsLTXService(LTXComfyService):
         results: List[Dict[str, Any]] = []
         failed:  List[Dict[str, Any]] = []
 
-        await self.report_progress(0, f"Section '{label}': starting {total} scene clips")
+        label_suffix = " (vertical)" if vertical else ""
+        await self.report_progress(0, f"Section '{label}'{label_suffix}: starting {total} scene clips")
 
         for idx, image_path in enumerate(image_files):
             await self.check_cancelled()
@@ -881,8 +890,12 @@ class AiNewsLTXService(LTXComfyService):
         await self.report_progress(100, f"Section '{label}': {len(results)}/{total} clips done")
         return {"label": label, "total": total, "animated": len(results), "failed": failed}
 
-    async def generate_all_sections(self) -> Dict[str, Any]:
-        """Animate all sections in narrative order."""
+    async def generate_all_sections(self, vertical: bool = False) -> Dict[str, Any]:
+        """Animate all sections in narrative order.
+
+        When vertical=True, animates the 9:16 image set (images/sections/{label}/vertical/)
+        for every section that has one, writing to clips/sections/{label}/vertical/.
+        """
         sections_root = self.project_dir / "images" / "sections"
         if not sections_root.exists():
             raise ServiceError(self.service_name, "No images/sections directory found")
@@ -891,6 +904,12 @@ class AiNewsLTXService(LTXComfyService):
             [d for d in sections_root.iterdir() if d.is_dir()],
             key=lambda d: self._section_sort_key(d.name),
         )
+        if vertical:
+            # No shot (9:16) content for intro, agenda, or outro — only stories.
+            section_dirs = [
+                d for d in section_dirs
+                if d.name not in ("intro", "agenda", "outro") and (d / "vertical").exists()
+            ]
         if not section_dirs:
             raise ServiceError(self.service_name, "No section image directories found")
 
@@ -904,7 +923,7 @@ class AiNewsLTXService(LTXComfyService):
                 f"Processing section '{label}' ({i+1}/{total_sections})",
             )
             try:
-                result = await self.generate_section(label)
+                result = await self.generate_section(label, vertical=vertical)
                 all_results[label] = result
             except Exception as exc:
                 self.logger.error(f"Section '{label}' failed: {exc}")

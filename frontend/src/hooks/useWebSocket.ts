@@ -10,6 +10,7 @@ import { VIDEO_KEYS } from "./useVideo";
 import { QUEUE_KEYS } from "./useQueue";
 import { LOG_KEYS } from "./useLogs";
 import { WAN2_KEYS } from "./useWan2";
+import { BLOG_KEYS } from "./useBlog";
 
 type MessageHandler = (event: string, data: Record<string, unknown>) => void;
 
@@ -104,6 +105,14 @@ export function useWebSocket({
     }
   }, [projectId, queryClient]);
 
+  const invalidateBlog = useCallback(() => {
+    if (projectId) {
+      queryClient.invalidateQueries({ queryKey: BLOG_KEYS.status(projectId) });
+      queryClient.invalidateQueries({ queryKey: BLOG_KEYS.content(projectId) });
+      queryClient.invalidateQueries({ queryKey: ["blog", "copy", projectId] });
+    }
+  }, [projectId, queryClient]);
+
   const handleMessage = useCallback(
     (raw: string) => {
       let parsed: Record<string, unknown>;
@@ -190,6 +199,7 @@ export function useWebSocket({
           else if (jobType === "section_subtitles" || jobType === "all_sections_subtitles") invalidateAiNewsSections();
           else if (jobType === "section_short") invalidateAiNewsSections();
           else if (jobType === "section_clip") invalidateAiNewsSections();
+          else if (jobType === "blog") invalidateBlog();
 
           addNotification({
             type: "success",
@@ -391,6 +401,7 @@ export function useWebSocket({
       invalidateLogs,
       invalidateClips,
       invalidateAiNewsSections,
+      invalidateBlog,
       queryClient,
       onMessage,
     ]

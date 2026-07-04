@@ -18,6 +18,7 @@ export interface ProgressState {
   metadata: StepProgress;
   translate?: StepProgress;
   wan2: StepProgress;
+  blog: StepProgress;
 }
 
 export interface FileStatusDetail {
@@ -106,6 +107,7 @@ const defaultProgressState = (): ProgressState => ({
   video: defaultStep(),
   metadata: defaultStep(),
   wan2: defaultStep(),
+  blog: defaultStep(),
 });
 
 interface ProjectStore {

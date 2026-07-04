@@ -23,6 +23,7 @@ import {
   Subtitles as SubtitleIcon,
   PhotoCamera as ThumbnailIcon,
   VideoLibrary as VideoIcon,
+  AutoStories as BlogIcon,
   Settings as SettingsIcon,
   Videocam as LogoIcon,
   AutoAwesomeMotion as ContentIcon,
@@ -59,8 +60,11 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Subtitles", path: "/subtitles", icon: <SubtitleIcon />, requiresProject: true },
   { label: "Clips", path: "/clips", icon: <ClipsIcon />, requiresProject: true, hideForAiNews: true },
   { label: "Clips", path: "/ai-news-clips", icon: <ClipsIcon />, requiresProject: true, aiNewsOnly: true },
+  { label: "Shot Images", path: "/shot-images", icon: <ImageIcon />, requiresProject: true, aiNewsOnly: true },
+  { label: "Shot Clips", path: "/shot-clips", icon: <ClipsIcon />, requiresProject: true, aiNewsOnly: true },
   { label: "Thumbnail", path: "/thumbnail", icon: <ThumbnailIcon />, requiresProject: true },
   { label: "Video", path: "/video", icon: <VideoIcon />, requiresProject: true },
+  { label: "Blog Post", path: "/blog", icon: <BlogIcon />, requiresProject: true },
 ];
 
 const CONTENT_STEPS = [

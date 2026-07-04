@@ -119,11 +119,14 @@ class ImageGenerationService(BaseService):
         self,
         section_label: str,
         section_prompts_path: Path,
+        vertical: bool = False,
     ) -> Dict[str, Any]:
         """Generate FLUX images for one AI News section.
 
         Reads prompts from section_prompts_path.
-        Saves images to images/sections/{label}/scene_NNN.png.
+        Saves images to images/sections/{label}/scene_NNN.png, or
+        images/sections/{label}/vertical/scene_NNN.png when vertical=True
+        (9:16 images used for shot videos instead of the 16:9 section clip).
         """
         if not section_prompts_path.exists():
             raise ServiceError(
@@ -137,10 +140,15 @@ class ImageGenerationService(BaseService):
             raise ServiceError(self.service_name, f"No prompts in {section_label}/image_prompts.txt")
 
         sec_images_dir = self.images_dir / "sections" / section_label
+        if vertical:
+            sec_images_dir = sec_images_dir / "vertical"
         sec_images_dir.mkdir(parents=True, exist_ok=True)
 
         original_images_dir = self.images_dir
+        original_flux_settings = self.flux_settings
         self.images_dir = sec_images_dir
+        if vertical:
+            self.flux_settings = {**self.flux_settings, "width": 1080, "height": 1920}
 
         total = len(scenes)
         results, failed = [], []
@@ -181,9 +189,10 @@ class ImageGenerationService(BaseService):
                     pass
         finally:
             self.images_dir = original_images_dir
+            self.flux_settings = original_flux_settings
 
         await self.report_progress(100, f"Section '{section_label}' images done — {len(results)}/{total}")
-        return {"label": section_label, "total": total, "generated": len(results),
+        return {"label": section_label, "vertical": vertical, "total": total, "generated": len(results),
                 "failed": failed, "images": results}
 
     async def generate_all(self) -> Dict[str, Any]:

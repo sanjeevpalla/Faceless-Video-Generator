@@ -688,15 +688,20 @@ def _escape_srt_path(path: Path) -> str:
 
 
 def _write_top_ass(srt_path: Path, out_path: Path, canvas_w: int, canvas_h: int,
-                   clip_h_est: int = 608) -> None:
-    """Convert SRT to ASS with subtitles positioned in the top blurred zone.
+                   clip_h_est: int = 608, margin_v: Optional[int] = None) -> None:
+    """Convert SRT to ASS with subtitles positioned near the top of the frame.
 
     Alignment=8 (top-center) is baked into the ASS Style so libass never falls
     back to the SRT default (bottom-center), which force_style Alignment= can
     silently ignore on some Windows FFmpeg builds.
+
+    When clip_h_est leaves a blurred letterbox zone above the content, margin_v
+    is derived to centre the text in that zone. Pass margin_v explicitly to
+    place subtitles directly over full-frame (native 9:16) video instead.
     """
-    top_zone = (canvas_h - clip_h_est) // 2   # ≈ 656 for 1920-tall canvas
-    margin_v = top_zone // 2 - 15             # centre of top zone, minus half a line
+    if margin_v is None:
+        top_zone = (canvas_h - clip_h_est) // 2   # ≈ 656 for 1920-tall canvas
+        margin_v = top_zone // 2 - 15             # centre of top zone, minus half a line
 
     header = (
         "[Script Info]\n"
@@ -767,7 +772,8 @@ class AiNewsShortsService:
         narrator_text: Optional[str] = None,
         logo_path: Optional[Path] = None,
     ) -> Dict[str, Any]:
-        images_dir = self.project_dir / "images"    / "sections" / section_label
+        images_dir          = self.project_dir / "images"    / "sections" / section_label
+        vertical_images_dir = images_dir / "vertical"
         audio_path = self.project_dir / "audio"     / "sections" / section_label / "narration.wav"
         srt_path   = self.project_dir / "subtitles" / "sections" / section_label / "subtitles.srt"
 
@@ -780,6 +786,9 @@ class AiNewsShortsService:
         images: List[Path] = (
             sorted(images_dir.glob("scene_*.png")) if images_dir.exists() else []
         )
+        vertical_images: List[Path] = (
+            sorted(vertical_images_dir.glob("scene_*.png")) if vertical_images_dir.exists() else []
+        )
 
         duration = await self._probe_duration(audio_path)
 
@@ -790,6 +799,7 @@ class AiNewsShortsService:
         await self._render(
             section_label=section_label,
             images=images,
+            vertical_images=vertical_images,
             audio_path=audio_path,
             srt_path=srt_path,
             total_duration=duration,
@@ -868,13 +878,33 @@ class AiNewsShortsService:
         title: str,
         narrator_text: Optional[str] = None,
         logo_path: Optional[Path] = None,
+        vertical_images: Optional[List[Path]] = None,
     ) -> None:
         W, H = self.CANVAS_W, self.CANVAS_H
+        vertical_images = vertical_images or []
 
-        # Prefer LTX clips (no subtitles, no narrator — clean shot)
+        # Source priority: native 9:16 LTX clips > 16:9 LTX clips (blur-padded) >
+        # native 9:16 static images > 16:9 static images (blur-padded) > black.
+        # Native-vertical sources were generated at 1080x1920 from their own
+        # prompts, so they fill the frame directly — no blur letterbox needed.
+        vertical_ltx_dir  = self.project_dir / "clips" / "sections" / section_label / "vertical"
+        vertical_ltx_clips = sorted(vertical_ltx_dir.glob("scene_*.mp4")) if vertical_ltx_dir.exists() else []
         ltx_dir   = self.project_dir / "clips" / "sections" / section_label
         ltx_clips = sorted(ltx_dir.glob("scene_*.mp4")) if ltx_dir.exists() else []
-        using_ltx = bool(ltx_clips)
+
+        if vertical_ltx_clips:
+            source_kind = "vertical_ltx"
+        elif ltx_clips:
+            source_kind = "horizontal_ltx"
+        elif vertical_images:
+            source_kind = "vertical_images"
+        elif images:
+            source_kind = "horizontal_images"
+        else:
+            source_kind = "none"
+
+        using_ltx          = source_kind in ("vertical_ltx", "horizontal_ltx")
+        is_native_vertical = source_kind in ("vertical_ltx", "vertical_images")
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_p = Path(tmp)
@@ -882,7 +912,8 @@ class AiNewsShortsService:
             # ── Video input ────────────────────────────────────────────────
             if using_ltx:
                 # Pre-concat LTX clips (video-only, stream-copy)
-                concat_lines = "".join(f"file '{c.as_posix()}'\n" for c in ltx_clips)
+                clips_for_concat = vertical_ltx_clips if source_kind == "vertical_ltx" else ltx_clips
+                concat_lines = "".join(f"file '{c.as_posix()}'\n" for c in clips_for_concat)
                 concat_txt   = tmp_p / "concat.txt"
                 concat_txt.write_text(concat_lines)
 
@@ -912,13 +943,14 @@ class AiNewsShortsService:
                     ["-stream_loop", "-1"] if raw_concat_dur < total_duration - 0.05 else []
                 ) + ["-i", str(raw_concat)]
 
-            elif images:
-                per = total_duration / len(images)
+            elif source_kind in ("vertical_images", "horizontal_images"):
+                src_images = vertical_images if source_kind == "vertical_images" else images
+                per = total_duration / len(src_images)
                 lines: List[str] = []
-                for img in images:
+                for img in src_images:
                     lines.append(f"file '{img.as_posix()}'")
                     lines.append(f"duration {per:.3f}")
-                lines.append(f"file '{images[-1].as_posix()}'")
+                lines.append(f"file '{src_images[-1].as_posix()}'")
                 concat_txt = tmp_p / "concat.txt"
                 concat_txt.write_text("\n".join(lines))
                 vid_input = ["-f", "concat", "-safe", "0", "-i", str(concat_txt)]
@@ -932,8 +964,13 @@ class AiNewsShortsService:
             # We need the real clip height after FFmpeg scales source to canvas width
             # (scale=W:-2) so we know exactly where the clip ends in the 9:16 canvas.
             # Static 16:9 estimates break for 3:2 or 4:3 sources.
-            _src = (ltx_clips[0] if using_ltx and ltx_clips
-                    else images[0] if images else None)
+            _src = {
+                "vertical_ltx":      vertical_ltx_clips[0] if vertical_ltx_clips else None,
+                "horizontal_ltx":    ltx_clips[0] if ltx_clips else None,
+                "vertical_images":   vertical_images[0] if vertical_images else None,
+                "horizontal_images": images[0] if images else None,
+                "none":              None,
+            }[source_kind]
             if _src:
                 _sw, _sh = await self._probe_source_size(_src)
                 # Mirror FFmpeg scale=W:-2: height proportional, rounded to even
@@ -944,9 +981,12 @@ class AiNewsShortsService:
             else:
                 _clip_h = int(W * 9 // 16)   # fallback: assume 16:9
 
-            # ── 9:16 blur-background filter ────────────────────────────────
-            # Input (LTX clips or images) is expanded to 9:16 with blur BG.
-            if using_ltx or images:
+            # ── Frame-fill filter ───────────────────────────────────────────
+            if is_native_vertical:
+                # Source is already 9:16 — fill the canvas directly, no blur pad.
+                vf = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}"
+            elif using_ltx or images:
+                # 16:9 source expanded to 9:16 with a blurred background fill.
                 vf = (
                     f"split=2[bg][fg];"
                     f"[bg]scale={W}:{H}:force_original_aspect_ratio=increase,"
@@ -970,18 +1010,30 @@ class AiNewsShortsService:
                         f":box=1:boxcolor=black@0.65:boxborderw=12"
                     )
 
-            # Subtitles in TOP blurred zone — all shots (LTX and image-based).
+            # Subtitles near the top of the frame — all shots (LTX and image-based).
             # We generate a proper ASS file so libass respects Alignment=8 (top-
             # center) even on Windows FFmpeg builds that ignore force_style Alignment.
+            # Native-vertical sources have no blurred letterbox zone to centre in,
+            # so subtitles are pinned to a fixed margin directly over the video.
             if srt_path.exists():
                 tmp_ass = tmp_p / "sub.ass"
-                _write_top_ass(srt_path, tmp_ass, W, H, clip_h_est=_clip_h)
+                _write_top_ass(
+                    srt_path, tmp_ass, W, H, clip_h_est=_clip_h,
+                    margin_v=60 if is_native_vertical else None,
+                )
                 ass_esc = _escape_srt_path(tmp_ass)
                 vf += f",subtitles='{ass_esc}'"
 
-            # Bottom-zone geometry derived from probed source size
-            clip_bottom = (H + _clip_h) // 2
-            btm_zone_h  = H - clip_bottom
+            # Bottom-zone geometry: for blur-padded sources this is the actual
+            # blank letterbox band below the content; for native-vertical
+            # sources there is no blank band, so anchor a nominal band near the
+            # bottom of the frame and overlay the narrator/banner on the video.
+            if is_native_vertical:
+                btm_zone_h  = int(H * 0.22)
+                clip_bottom = H - btm_zone_h
+            else:
+                clip_bottom = (H + _clip_h) // 2
+                btm_zone_h  = H - clip_bottom
 
             # Find narrator VIDEO clips — prefer *_nobg.webm (alpha, transparent BG)
             nar_clips     = self._find_narrator_clips()

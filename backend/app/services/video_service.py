@@ -146,10 +146,13 @@ TEMPLATES: Dict[str, Dict[str, Any]] = {
 
 
 # ---------------------------------------------------------------------------
-# AI News agenda card — the header/footer labels stay English by design; only
-# the per-story title list is localized (Nirmala UI ships with Windows 10/11
-# and covers Telugu/Hindi/etc.; CJK/Arabic still fall back to whatever the OS
-# resolves via the candidate list below).
+# AI News agenda card — the header/footer labels and the per-story title list
+# both stay English by design, regardless of the project's narration language.
+# The Unicode font fallback below still covers Telugu/Hindi/etc. (Nirmala UI
+# ships with Windows 10/11) for any non-Latin text that reaches this renderer
+# (e.g. projects generated before this was English-only, or future non-English
+# UI text); CJK/Arabic still fall back to whatever the OS resolves via the
+# candidate list below.
 # ---------------------------------------------------------------------------
 _UNICODE_FONT_CANDIDATES = [
     "C:/Windows/Fonts/Nirmala.ttc",

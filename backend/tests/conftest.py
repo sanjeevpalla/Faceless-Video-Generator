@@ -74,6 +74,17 @@ def thumbnail_prompt_txt(tmp_project_dir: Path) -> Path:
 
 
 @pytest.fixture()
+def script_md(tmp_project_dir: Path) -> Path:
+    text = (
+        "TITLE\n\nSECTION 1: HOOK\n[VISUAL] intro shot\n"
+        "[NARRATOR] This is a test narration for the video script.\n"
+    )
+    path = tmp_project_dir / "input" / "script.md"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+@pytest.fixture()
 def seo_json(tmp_project_dir: Path) -> Path:
     data = {
         "title": "Test Video Title Under 100 Chars",

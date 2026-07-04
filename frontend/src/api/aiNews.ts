@@ -22,6 +22,7 @@ export interface SectionContent {
   image_prompts: string | null;
   subtitle_srt: string | null;
   image_scene_ids: number[];
+  vertical_image_scene_ids: number[];
   voice_scene_ids: number[];
   has_narration: boolean;
   script_text: string | null;
@@ -36,11 +37,22 @@ export interface SectionStatus {
   has_scenes: boolean | null;
   has_image_prompts: boolean | null;
   has_images: boolean | null;
+  has_vertical_images: boolean | null;
   has_voice: boolean;
   has_subtitles: boolean;
   has_clip: boolean;
   has_short: boolean;
   has_ltx: boolean;
+  has_vertical_ltx: boolean;
+  ltx_scene_count: number;
+  vertical_ltx_scene_count: number;
+  ltx_expected_scenes: number;
+}
+
+export interface LtxSceneClip {
+  scene_id: number;
+  filename: string;
+  size_mb: number;
 }
 
 export const aiNewsApi = {
@@ -259,6 +271,61 @@ export const aiNewsApi = {
     return response.data;
   },
 
+  generateSectionLtxVertical: async (
+    projectId: string,
+    label: string
+  ): Promise<{ status: string; message: string }> => {
+    const response = await apiClient.post(
+      `/ai-news/${projectId}/sections/${label}/ltx/vertical`
+    );
+    return response.data;
+  },
+
+  generateAllSectionsLtxVertical: async (
+    projectId: string
+  ): Promise<{ status: string; message: string }> => {
+    const response = await apiClient.post(
+      `/ai-news/${projectId}/sections/ltx/vertical/generate-all`
+    );
+    return response.data;
+  },
+
+  deleteSectionLtxVertical: async (
+    projectId: string,
+    label: string
+  ): Promise<{ status: string; deleted_files: number; label: string }> => {
+    const response = await apiClient.delete(
+      `/ai-news/${projectId}/sections/${label}/ltx/vertical`
+    );
+    return response.data;
+  },
+
+  getSectionLtxScenes: async (
+    projectId: string,
+    label: string
+  ): Promise<{ label: string; scenes: LtxSceneClip[] }> => {
+    const response = await apiClient.get(
+      `/ai-news/${projectId}/sections/${label}/ltx/scenes`
+    );
+    return response.data;
+  },
+
+  getSectionLtxVerticalScenes: async (
+    projectId: string,
+    label: string
+  ): Promise<{ label: string; scenes: LtxSceneClip[] }> => {
+    const response = await apiClient.get(
+      `/ai-news/${projectId}/sections/${label}/ltx/vertical/scenes`
+    );
+    return response.data;
+  },
+
+  getSectionLtxSceneUrl: (projectId: string, label: string, sceneId: number): string =>
+    `${apiClient.defaults.baseURL}/ai-news/${projectId}/sections/${label}/ltx/scene/${sceneId}`,
+
+  getSectionLtxVerticalSceneUrl: (projectId: string, label: string, sceneId: number): string =>
+    `${apiClient.defaults.baseURL}/ai-news/${projectId}/sections/${label}/ltx/vertical/scene/${sceneId}`,
+
   getSectionsContent: async (projectId: string): Promise<SectionContent[]> => {
     const response = await apiClient.get(`/ai-news/${projectId}/sections/content`);
     return response.data;
@@ -285,6 +352,65 @@ export const aiNewsApi = {
   ): Promise<{ status: string; deleted_files: number }> => {
     const response = await apiClient.delete(
       `/ai-news/${projectId}/sections/images/all`
+    );
+    return response.data;
+  },
+
+  generateSectionImagesVertical: async (
+    projectId: string,
+    label: string
+  ): Promise<{ status: string; message: string }> => {
+    const response = await apiClient.post(
+      `/ai-news/${projectId}/sections/${label}/images/vertical`
+    );
+    return response.data;
+  },
+
+  deleteSectionImagesVertical: async (
+    projectId: string,
+    label: string
+  ): Promise<{ status: string; deleted_files: number; label: string }> => {
+    const response = await apiClient.delete(
+      `/ai-news/${projectId}/sections/${label}/images/vertical`
+    );
+    return response.data;
+  },
+
+  deleteAllSectionImagesVertical: async (
+    projectId: string
+  ): Promise<{ status: string; deleted_files: number }> => {
+    const response = await apiClient.delete(
+      `/ai-news/${projectId}/sections/images/vertical/all`
+    );
+    return response.data;
+  },
+
+  getSectionImageVerticalUrl: (projectId: string, label: string, sceneId: number): string =>
+    `${apiClient.defaults.baseURL}/ai-news/${projectId}/sections/${label}/media/image/vertical/${sceneId}`,
+
+  regenerateSectionImageVertical: async (
+    projectId: string,
+    label: string,
+    sceneId: number
+  ): Promise<{ status: string; message: string }> => {
+    const response = await apiClient.post(
+      `/ai-news/${projectId}/sections/${label}/images/vertical/${sceneId}/regenerate`
+    );
+    return response.data;
+  },
+
+  uploadSectionImageVertical: async (
+    projectId: string,
+    label: string,
+    sceneId: number,
+    file: File
+  ): Promise<{ status: string; path: string }> => {
+    const form = new FormData();
+    form.append("file", file);
+    const response = await apiClient.post(
+      `/ai-news/${projectId}/sections/${label}/images/vertical/${sceneId}/upload`,
+      form,
+      { headers: { "Content-Type": "multipart/form-data" } }
     );
     return response.data;
   },
