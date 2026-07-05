@@ -177,7 +177,7 @@ async def run_pipeline(
         job_id=db_job.id,
         project_id=project_id,
         job_type=JobType.PIPELINE,
-        coro_factory=make_coro,
+        coroutine_factory=make_coro,
         priority=5.0,
     )
     await global_queue.enqueue(queue_job)
