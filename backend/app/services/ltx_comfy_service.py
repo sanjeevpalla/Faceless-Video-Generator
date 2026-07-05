@@ -268,32 +268,48 @@ class LTXComfyService(BaseService):
             f"Animating scene {scene_id}: {image_path.name} | "
             f"frames={frames} ({frames / _OUTPUT_FPS:.1f}s) | prompt={prompt[:80]}…"
         )
+        duration_s = frames / _OUTPUT_FPS
 
-        image_name = await self._upload_image(image_path)
-        seed = random.randint(0, 2**31 - 1)
-        workflow = self._build_workflow(
-            image_name=image_name,
-            prompt=prompt,
-            neg_prompt=(
-                "worst quality, blurry, jittery, distorted, motion blur, ugly, "
-                "text, letters, words, writing, typography, readable text, "
-                "captions, subtitles, watermark, characters, glyphs, symbols, "
-                "alphabet, numbers, digits, font, script, language"
-            ),
-            width=self.width,
-            height=self.height,
-            num_frames=frames,
-            seed=seed,
-        )
-        job_id = await self._submit_workflow(workflow)
-        self.logger.info(f"Scene {scene_id} → ComfyUI prompt_id={job_id}")
+        # Blank/black output (e.g. from an unlucky seed or a transient sampler glitch)
+        # passes ComfyUI's own completion check since a valid .mp4 is still written —
+        # so we verify pixel content ourselves and retry once with a fresh seed.
+        for attempt in range(2):
+            image_name = await self._upload_image(image_path)
+            seed = random.randint(0, 2**31 - 1)
+            workflow = self._build_workflow(
+                image_name=image_name,
+                prompt=prompt,
+                neg_prompt=(
+                    "worst quality, blurry, jittery, distorted, motion blur, ugly, "
+                    "text, letters, words, writing, typography, readable text, "
+                    "captions, subtitles, watermark, characters, glyphs, symbols, "
+                    "alphabet, numbers, digits, font, script, language"
+                ),
+                width=self.width,
+                height=self.height,
+                num_frames=frames,
+                seed=seed,
+            )
+            job_id = await self._submit_workflow(workflow)
+            self.logger.info(f"Scene {scene_id} → ComfyUI prompt_id={job_id}")
 
-        timeout = max(self._CLIP_TIMEOUT_MIN, frames * self._CLIP_TIMEOUT_MULT)
-        self.logger.info(f"Scene {scene_id}: poll timeout={timeout}s")
-        video_url = await self._poll_job(job_id, timeout=timeout)
+            timeout = max(self._CLIP_TIMEOUT_MIN, frames * self._CLIP_TIMEOUT_MULT)
+            self.logger.info(f"Scene {scene_id}: poll timeout={timeout}s")
+            video_url = await self._poll_job(job_id, timeout=timeout)
 
-        await self._download_video(video_url, output_path)
-        self.logger.info(f"Clip saved → {output_path}")
+            await self._download_video(video_url, output_path)
+            self.logger.info(f"Clip saved → {output_path}")
+
+            if not await self._is_clip_blank(output_path, duration_s):
+                break
+            if attempt == 0:
+                self.logger.warning(
+                    f"Scene {scene_id}: output looks blank/black — retrying with a new seed"
+                )
+            else:
+                self.logger.warning(
+                    f"Scene {scene_id}: still blank after retry — keeping clip (needs manual review)"
+                )
 
         await self._mux_wav_into_clip(output_path, scene_id)
 
@@ -302,8 +318,39 @@ class LTXComfyService(BaseService):
             "path": str(output_path),
             "filename": output_path.name,
             "num_frames": frames,
-            "duration_s": round(frames / _OUTPUT_FPS, 2),
+            "duration_s": round(duration_s, 2),
         }
+
+    async def _is_clip_blank(self, clip_path: Path, duration_s: float) -> bool:
+        """Best-effort near-black detection via FFmpeg's blackdetect filter.
+
+        Flags the clip as blank if black segments cover most of its duration.
+        Fails open (returns False) on any FFmpeg/parse error so an unrelated
+        FFmpeg issue never blocks the pipeline.
+        """
+        if duration_s <= 0:
+            return False
+        cmd = [
+            "ffmpeg", "-i", str(clip_path),
+            "-vf", "blackdetect=d=0.1:pic_th=0.98",
+            "-an", "-f", "null", "-",
+        ]
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run, cmd, capture_output=True, text=True, timeout=60
+            )
+        except Exception as exc:
+            self.logger.debug(f"Blank-clip check failed to run FFmpeg: {exc}")
+            return False
+
+        total_black = 0.0
+        for line in result.stderr.splitlines():
+            if "black_duration:" in line:
+                try:
+                    total_black += float(line.split("black_duration:")[1].split()[0])
+                except (IndexError, ValueError):
+                    continue
+        return total_black >= duration_s * 0.9
 
     async def _mux_wav_into_clip(self, clip_path: Path, scene_id: int) -> bool:
         """Mux the scene WAV into an existing video-only clip file in-place.
@@ -748,9 +795,9 @@ class AiNewsLTXService(LTXComfyService):
 
     service_name = "ai_news_ltx"
 
-    # Tighter timeouts: 768×512 distilled (8 steps) on RTX 5060 Ti ≤ 5 min
+    # Tighter timeouts: 576×1024 distilled (8 steps) on RTX 5060 Ti ≤ 5 min
     _CLIP_TIMEOUT_MIN: int = 300   # 5 min minimum (covers cold model-load)
-    _CLIP_TIMEOUT_MULT: int = 2    # 2 s/frame for the smaller 768×512 resolution
+    _CLIP_TIMEOUT_MULT: int = 2    # 2 s/frame for the smaller 576×1024 resolution
 
     @staticmethod
     def _section_sort_key(label: str) -> tuple:

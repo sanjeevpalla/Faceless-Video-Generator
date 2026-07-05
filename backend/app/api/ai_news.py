@@ -84,6 +84,7 @@ class GenerateRequest(BaseModel):
 class ShortOptions(BaseModel):
     narrator_text: Optional[str] = None
     logo_path: Optional[str] = None
+    include_narrator: bool = True
 
 
 @router.post("/{project_id}/generate")
@@ -1684,10 +1685,12 @@ async def generate_section_short(
                 logo_resolved = _c
                 break
 
-    narrator_text = options.narrator_text
+    narrator_text = options.narrator_text if options.include_narrator else None
 
-    video_settings = await settings_repo.get_video_settings()
-    narrator_clips_dir = video_settings.narrator_clips_dir or ""
+    narrator_clips_dir = ""
+    if options.include_narrator:
+        video_settings = await settings_repo.get_video_settings()
+        narrator_clips_dir = video_settings.narrator_clips_dir or ""
 
     async def run() -> None:
         try:
@@ -1704,6 +1707,7 @@ async def generate_section_short(
                 title=title,
                 narrator_text=narrator_text,
                 logo_path=logo_resolved,
+                include_narrator=options.include_narrator,
             )
             await connection_manager.broadcast_to_project(
                 project_id, "job_completed",
@@ -2307,8 +2311,14 @@ async def generate_section_ltx_vertical(
         project_id=project_id,
         project_dir=project_dir,
         comfyui_url=comfyui_url,
-        width=1080,
-        height=1920,
+        # 576x1024: exact 9:16 ratio, both dims a multiple of 32 (LTX-Video's VAE
+        # spatial downsample factor). 1080 is NOT a multiple of 32 (33.75), which
+        # forced LTXVImgToVideo to round/pad internally — causing both excessive
+        # render time and, for some seeds, corrupted/blank output. The final
+        # shorts compositor (shorts_service.py) already scales+crops every clip
+        # up to the 1080x1920 canvas, so native generation at full res is unneeded.
+        width=576,
+        height=1024,
         progress_callback=_progress_cb,
     )
 
@@ -2394,8 +2404,14 @@ async def generate_all_sections_ltx_vertical(
         project_id=project_id,
         project_dir=project_dir,
         comfyui_url=comfyui_url,
-        width=1080,
-        height=1920,
+        # 576x1024: exact 9:16 ratio, both dims a multiple of 32 (LTX-Video's VAE
+        # spatial downsample factor). 1080 is NOT a multiple of 32 (33.75), which
+        # forced LTXVImgToVideo to round/pad internally — causing both excessive
+        # render time and, for some seeds, corrupted/blank output. The final
+        # shorts compositor (shorts_service.py) already scales+crops every clip
+        # up to the 1080x1920 canvas, so native generation at full res is unneeded.
+        width=576,
+        height=1024,
         progress_callback=_all_progress_cb,
     )
 

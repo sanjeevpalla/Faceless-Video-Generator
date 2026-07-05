@@ -20,19 +20,19 @@ script.md, scenes.json, image_prompts.txt, thumbnail_prompt.txt, seo.json, bg_mu
 
 ## Running the project
 ```
-# Terminal 1 — backend
-cd backend && python run.py
+# Terminal 1 — backend (uses backend/venv, created on first run)
+cd backend && venv\Scripts\python.exe run.py
 
 # Terminal 2 — frontend
 cd frontend && npm run dev
 
-# Or just double-click start.bat
+# Or just double-click start.bat (auto-creates backend/venv if missing)
 ```
 
 ## Running tests
 ```
 cd backend
-python -m pytest tests/ -v
+venv\Scripts\python.exe -m pytest tests/ -v
 # 203 tests, ~5 seconds, no hardware needed
 ```
 

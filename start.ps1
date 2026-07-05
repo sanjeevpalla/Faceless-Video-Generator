@@ -10,8 +10,18 @@ $ProjectRoot = $PSScriptRoot
 
 function Start-Backend {
     Write-Host "[FVG] Starting FastAPI backend..." -ForegroundColor Cyan
+    $venvPython = Join-Path $ProjectRoot "backend\venv\Scripts\python.exe"
+    if (-not (Test-Path $venvPython)) {
+        Write-Host "[FVG] Backend venv not found. Creating it..." -ForegroundColor Yellow
+        Push-Location (Join-Path $ProjectRoot "backend")
+        python -m venv venv
+        & .\venv\Scripts\python.exe -m pip install --upgrade pip
+        & .\venv\Scripts\python.exe -m pip install "setuptools<81"
+        & .\venv\Scripts\python.exe -m pip install -r requirements.txt
+        Pop-Location
+    }
     Start-Process powershell -ArgumentList "-NoExit", "-Command",
-        "cd '$ProjectRoot\backend'; python run.py" `
+        "cd '$ProjectRoot\backend'; .\venv\Scripts\python.exe run.py" `
         -WindowStyle Normal
 }
 

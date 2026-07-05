@@ -771,6 +771,7 @@ class AiNewsShortsService:
         title: str = "",
         narrator_text: Optional[str] = None,
         logo_path: Optional[Path] = None,
+        include_narrator: bool = True,
     ) -> Dict[str, Any]:
         images_dir          = self.project_dir / "images"    / "sections" / section_label
         vertical_images_dir = images_dir / "vertical"
@@ -807,6 +808,7 @@ class AiNewsShortsService:
             title=title,
             narrator_text=narrator_text,
             logo_path=logo_path if (logo_path and logo_path.exists()) else None,
+            include_narrator=include_narrator,
         )
 
         return {"label": section_label, "duration": duration, "output": str(out_path)}
@@ -879,6 +881,7 @@ class AiNewsShortsService:
         narrator_text: Optional[str] = None,
         logo_path: Optional[Path] = None,
         vertical_images: Optional[List[Path]] = None,
+        include_narrator: bool = True,
     ) -> None:
         W, H = self.CANVAS_W, self.CANVAS_H
         vertical_images = vertical_images or []
@@ -1036,11 +1039,11 @@ class AiNewsShortsService:
                 btm_zone_h  = H - clip_bottom
 
             # Find narrator VIDEO clips — prefer *_nobg.webm (alpha, transparent BG)
-            nar_clips     = self._find_narrator_clips()
+            nar_clips     = self._find_narrator_clips() if include_narrator else []
             has_nar_video = bool(nar_clips)
 
             # Text-banner fallback: only shown when NO narrator video clips exist
-            if not has_nar_video and narrator_text:
+            if include_narrator and not has_nar_video and narrator_text:
                 safe_narrator = _escape_drawtext(narrator_text)
                 font = _find_system_font()
                 font_arg = f":fontfile='{_escape_font_path(font)}'" if font else ""

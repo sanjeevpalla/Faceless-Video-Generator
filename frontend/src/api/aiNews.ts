@@ -152,7 +152,7 @@ export const aiNewsApi = {
   generateSectionShort: async (
     projectId: string,
     label: string,
-    options?: { narrator_text?: string; logo_path?: string }
+    options?: { narrator_text?: string; logo_path?: string; include_narrator?: boolean }
   ): Promise<{ status: string; message: string }> => {
     const response = await apiClient.post(
       `/ai-news/${projectId}/sections/${label}/short`,

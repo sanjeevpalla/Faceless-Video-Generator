@@ -33,7 +33,16 @@ timeout /t 2 /nobreak >nul
 
 :: --- Start backend ---
 echo [FVG] Starting FastAPI backend (port 8000)...
-start "FVG Backend" cmd /k "cd /d "%~dp0backend" && python run.py"
+if not exist "%~dp0backend\venv\Scripts\python.exe" (
+    echo [FVG] Backend venv not found. Creating it...
+    pushd "%~dp0backend"
+    python -m venv venv
+    venv\Scripts\python.exe -m pip install --upgrade pip
+    venv\Scripts\python.exe -m pip install "setuptools<81"
+    venv\Scripts\python.exe -m pip install -r requirements.txt
+    popd
+)
+start "FVG Backend" cmd /k "cd /d "%~dp0backend" && venv\Scripts\python.exe run.py"
 
 timeout /t 3 /nobreak >nul
 

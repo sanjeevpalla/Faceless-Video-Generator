@@ -299,7 +299,7 @@ export default function AiNewsShotClipsPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Shot options
-  const [includeNarrator, setIncludeNarrator] = useState(true);
+  const [includeNarrator, setIncludeNarrator] = useState(false);
   const [narratorText, setNarratorText]       = useState("Deep Dive AI");
   const [includeLogo, setIncludeLogo]         = useState(false);
 
@@ -402,6 +402,7 @@ export default function AiNewsShotClipsPage() {
       await aiNewsApi.generateSectionShort(projectId, label, {
         narrator_text: includeNarrator && narratorText ? narratorText : undefined,
         logo_path: includeLogo ? "logo.png" : undefined,
+        include_narrator: includeNarrator,
       });
     } catch (err: unknown) {
       const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
