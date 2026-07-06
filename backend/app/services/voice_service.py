@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import shutil
+import subprocess
 import tempfile
 import wave
 from pathlib import Path
@@ -97,13 +98,13 @@ class VoiceGenerationService(BaseService):
             )
 
         if pending:
-            # ── Silence scenes (no narration text) ──────────────────────────
+            # ── Filler audio for scenes with no narration text ──────────────
             for s in [sc for sc in pending if not sc["text"]]:
                 await self.check_cancelled()
                 try:
-                    generated_files.append(self._write_silence(s["id"], s["duration"]))
+                    generated_files.append(self._write_filler_audio(s["id"], s["duration"]))
                 except Exception as exc:
-                    self.logger.error("Silence gen failed scene %s: %s", s["id"], exc)
+                    self.logger.error("Filler audio gen failed scene %s: %s", s["id"], exc)
                     failed.append({"scene_id": s["id"], "error": str(exc)})
 
             # ── Text scenes: check cache, then batch the rest ────────────────
@@ -195,10 +196,12 @@ class VoiceGenerationService(BaseService):
         combined = f"{text}|{self.model_path}|{self.speed}"
         return hashlib.sha256(combined.encode()).hexdigest()[:16]
 
-    def _write_silence(self, scene_id: Any, duration: float) -> Dict[str, Any]:
+    def _write_silence(
+        self, scene_id: Any, duration: float, output_path: Optional[Path] = None
+    ) -> Dict[str, Any]:
         """Write a silent WAV file matching *duration* seconds for scenes with no narration."""
         import struct
-        output_path = self.audio_dir / f"scene_{int(scene_id):03d}.wav"
+        output_path = output_path or (self.audio_dir / f"scene_{int(scene_id):03d}.wav")
         sample_rate  = 22050
         num_channels = 1
         sample_width = 2  # 16-bit
@@ -231,6 +234,56 @@ class VoiceGenerationService(BaseService):
             "duration": round(duration, 2),
             "silence":  True,
         }
+
+    def _find_music(self) -> Optional[Path]:
+        """Locate the project's background music file (input/bg_music.*, music.*,
+        background.*, or the first audio file in input/), if any was provided."""
+        input_dir = self.project_dir / "input"
+        for ext in [".mp3", ".wav", ".ogg", ".m4a"]:
+            for name in [f"bg_music{ext}", f"music{ext}", f"background{ext}"]:
+                p = input_dir / name
+                if p.exists():
+                    return p
+        for ext in [".mp3", ".wav", ".ogg", ".m4a"]:
+            found = list(input_dir.glob(f"*{ext}"))
+            if found:
+                return found[0]
+        return None
+
+    def _write_filler_audio(
+        self, scene_id: Any, duration: float, output_path: Optional[Path] = None
+    ) -> Dict[str, Any]:
+        """Fill a scene's WAV slot for scenes with no narration text.
+
+        Prefers a clip of the project's background music (so the scene isn't
+        dead silent) and falls back to true silence when no music file is
+        available. Every scene ends up with a WAV file either way, so the
+        video renderer's concat step never sees an inconsistent audio stream
+        layout across segments.
+        """
+        output_path = output_path or (self.audio_dir / f"scene_{int(scene_id):03d}.wav")
+        music = self._find_music()
+        if music:
+            cmd = [
+                "ffmpeg", "-y",
+                "-stream_loop", "-1", "-i", str(music),
+                "-t", f"{max(0.1, duration):.3f}",
+                "-ac", "1", "-ar", "22050", "-af", "volume=0.25",
+                str(output_path),
+            ]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if r.returncode == 0:
+                return {
+                    "scene_id":     scene_id,
+                    "path":         str(output_path),
+                    "filename":     output_path.name,
+                    "duration":     round(duration, 2),
+                    "filler_music": True,
+                }
+            self.logger.warning(
+                f"Music filler failed for scene {scene_id}, falling back to silence: {r.stderr[-200:]}"
+            )
+        return self._write_silence(scene_id, duration, output_path)
 
     async def generate_scene_audio(self, scene_id: Any, text: str) -> Dict[str, Any]:
         text_hash = self._hash_text(text)
@@ -344,19 +397,24 @@ class VoiceGenerationService(BaseService):
         sec_audio = self.audio_dir / "sections" / section_label
         sec_audio.mkdir(parents=True, exist_ok=True)
 
-        # Build (id, text) pairs
+        # Build (id, text, duration) tuples — scenes with no narration text are
+        # kept (not filtered out) so they still get a filler WAV below; dropping
+        # them entirely would desync scene numbering from the rendered video.
         narr_chunks: List[Dict[str, Any]] = []
         if section_scenes_path and section_scenes_path.exists():
             with open(section_scenes_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             raw = data if isinstance(data, list) else data.get("scenes", [])
             narr_chunks = [
-                {"id": s.get("scene_id", i + 1), "text": s.get("narration", "").strip()}
+                {
+                    "id":       s.get("scene_id", i + 1),
+                    "text":     s.get("narration", "").strip(),
+                    "duration": float(s.get("duration", 5)),
+                }
                 for i, s in enumerate(raw)
-                if s.get("narration", "").strip()
             ]
         elif section_script_text:
-            narr_chunks = [{"id": 1, "text": section_script_text.strip()}]
+            narr_chunks = [{"id": 1, "text": section_script_text.strip(), "duration": 5.0}]
 
         if not narr_chunks:
             raise ServiceError(
@@ -392,6 +450,24 @@ class VoiceGenerationService(BaseService):
                 })
             else:
                 pending_chunks.append(chunk)
+
+        # Filler audio (music bed, or silence) for chunks with no narration text
+        for chunk in [c for c in pending_chunks if not c["text"]]:
+            await self.check_cancelled()
+            dest = sec_audio / f"scene_{int(chunk['id']):03d}.wav"
+            try:
+                self._write_filler_audio(chunk["id"], chunk["duration"], dest)
+                generated.append({
+                    "scene_id": chunk["id"],
+                    "path":     str(dest),
+                    "filename": dest.name,
+                    "duration": _wav_duration(dest),
+                })
+            except Exception as exc:
+                self.logger.error(
+                    "Filler audio failed for %s chunk %s: %s", section_label, chunk["id"], exc
+                )
+        pending_chunks = [c for c in pending_chunks if c["text"]]
 
         if pending_chunks:
             await self.report_progress(

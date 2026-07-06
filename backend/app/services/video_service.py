@@ -1747,28 +1747,45 @@ class VideoGenerationService(BaseService):
             # ── mux video segment with per-scene WAV ───────────────────
             # This ensures narration is locked to the exact video frames —
             # no drift even if FPS rounding makes each segment slightly short.
+            #
+            # Every segment MUST end up with an audio stream (real narration or,
+            # if the WAV is missing, silence) — the final concat step below uses
+            # "-c copy", which locks onto the first file's stream layout. If even
+            # one segment (especially the first) lacks an audio track, the entire
+            # concatenated video silently loses ALL audio, even for scenes whose
+            # narration muxed correctly.
             final_seg = seg_out
             if audio_dir:
                 wav_path = audio_dir / f"scene_{scene_id:03d}.wav"
+                muxed_out = muxed_dir / f"mux_{idx:03d}.mp4"
                 if wav_path.exists():
-                    muxed_out = muxed_dir / f"mux_{idx:03d}.mp4"
-                    mux_cmd = [
-                        "ffmpeg", "-y",
-                        "-i", str(seg_out),
-                        "-i", str(wav_path),
-                        "-map", "0:v:0", "-map", "1:a:0",
-                        "-c:v", "copy",
-                        "-c:a", "aac", "-b:a", "128k",
-                        "-shortest",  # end when shorter of video/audio ends
-                        str(muxed_out),
+                    audio_input = ["-i", str(wav_path)]
+                else:
+                    self.logger.warning(
+                        f"Scene {scene_id}: narration WAV missing (audio/scene_{scene_id:03d}.wav) — "
+                        f"inserting silence so the video keeps a consistent audio track"
+                    )
+                    audio_input = [
+                        "-f", "lavfi", "-i",
+                        "anullsrc=channel_layout=stereo:sample_rate=44100",
                     ]
-                    mr = subprocess.run(mux_cmd, capture_output=True, text=True, timeout=120)
-                    if mr.returncode == 0:
-                        final_seg = muxed_out
-                    else:
-                        self.logger.warning(
-                            f"Scene {scene_id}: per-scene WAV mux failed — audio may drift"
-                        )
+                mux_cmd = [
+                    "ffmpeg", "-y",
+                    "-i", str(seg_out),
+                    *audio_input,
+                    "-map", "0:v:0", "-map", "1:a:0",
+                    "-c:v", "copy",
+                    "-c:a", "aac", "-b:a", "128k",
+                    "-shortest",  # end when shorter of video/audio ends
+                    str(muxed_out),
+                ]
+                mr = subprocess.run(mux_cmd, capture_output=True, text=True, timeout=120)
+                if mr.returncode == 0:
+                    final_seg = muxed_out
+                else:
+                    self.logger.warning(
+                        f"Scene {scene_id}: WAV mux failed — audio may drift"
+                    )
 
             self.logger.info(
                 "Scene %d/%d done → %s (audio=%s)",

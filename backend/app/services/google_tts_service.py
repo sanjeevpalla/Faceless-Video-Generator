@@ -147,14 +147,64 @@ class GoogleTTSService:
             (sec_audio / "narration.wav").unlink(missing_ok=True)
 
     def _load_scenes(self, path: Path) -> List[Dict[str, Any]]:
+        # Scenes with no narration text are kept (not filtered out) so they still
+        # get a filler WAV via _write_filler_audio — dropping them would leave a
+        # gap in scene_NNN.wav numbering and can desync/kill audio entirely when
+        # the video renderer concatenates all scene segments.
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         raw = data if isinstance(data, list) else data.get("scenes", [])
         return [
-            {"id": s.get("scene_id", i + 1), "text": s.get("narration", "").strip()}
+            {
+                "id":       s.get("scene_id", i + 1),
+                "text":     s.get("narration", "").strip(),
+                "duration": float(s.get("duration", 5)),
+            }
             for i, s in enumerate(raw)
-            if s.get("narration", "").strip()
         ]
+
+    def _find_music(self) -> Optional[Path]:
+        """Locate the project's background music file (input/bg_music.*, music.*,
+        background.*, or the first audio file in input/), if any was provided."""
+        input_dir = self.project_dir / "input"
+        for ext in [".mp3", ".wav", ".ogg", ".m4a"]:
+            for name in [f"bg_music{ext}", f"music{ext}", f"background{ext}"]:
+                p = input_dir / name
+                if p.exists():
+                    return p
+        for ext in [".mp3", ".wav", ".ogg", ".m4a"]:
+            found = list(input_dir.glob(f"*{ext}"))
+            if found:
+                return found[0]
+        return None
+
+    def _write_filler_audio(self, duration: float, dest: Path) -> None:
+        """Fill a scene's WAV slot for scenes with no narration text.
+
+        Prefers a clip of the project's background music (so the scene isn't
+        dead silent) and falls back to true silence when no music file is
+        available.
+        """
+        music = self._find_music()
+        if music:
+            cmd = [
+                "ffmpeg", "-y",
+                "-stream_loop", "-1", "-i", str(music),
+                "-t", f"{max(0.1, duration):.3f}",
+                "-ac", "1", "-ar", str(self.SAMPLE_RATE), "-af", "volume=0.25",
+                str(dest),
+            ]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            if r.returncode == 0:
+                return
+            logger.warning(f"Music filler failed, falling back to silence: {r.stderr[-200:]}")
+
+        n_frames = int(self.SAMPLE_RATE * max(0.1, duration))
+        with wave.open(str(dest), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(self.SAMPLE_RATE)
+            wf.writeframes(b"\x00\x00" * n_frames)
 
     # ── public API (mirrors VoiceGenerationService) ──────────────────────────
 
@@ -166,7 +216,7 @@ class GoogleTTSService:
 
         chunks = self._load_scenes(scenes_path)
         if not chunks:
-            raise RuntimeError("No narration text found in scenes.json")
+            raise RuntimeError("No scenes found in scenes.json")
 
         self._clear_stale(self.audio_dir, chunks)
 
@@ -181,7 +231,10 @@ class GoogleTTSService:
                 f"Google TTS: scene {idx + 1}/{total}",
                 {"scene_id": chunk["id"], "completed": idx, "total": total},
             )
-            await loop.run_in_executor(None, self._synthesize, chunk["text"], dest)
+            if chunk["text"]:
+                await loop.run_in_executor(None, self._synthesize, chunk["text"], dest)
+            else:
+                await loop.run_in_executor(None, self._write_filler_audio, chunk["duration"], dest)
             generated.append(dest)
 
         merged = self.audio_dir / "narration_merged.wav"
@@ -209,10 +262,10 @@ class GoogleTTSService:
         if section_scenes_path and section_scenes_path.exists():
             chunks = self._load_scenes(section_scenes_path)
         elif section_script_text:
-            chunks = [{"id": 1, "text": section_script_text.strip()}]
+            chunks = [{"id": 1, "text": section_script_text.strip(), "duration": 5.0}]
 
         if not chunks:
-            raise RuntimeError(f"No narration text for section '{section_label}'")
+            raise RuntimeError(f"No scenes found for section '{section_label}'")
 
         self._clear_stale(sec_audio, chunks)
 
@@ -227,7 +280,10 @@ class GoogleTTSService:
                 f"Google TTS: {section_label} {idx + 1}/{total}",
                 {"scene_id": chunk["id"], "completed": idx, "total": total},
             )
-            await loop.run_in_executor(None, self._synthesize, chunk["text"], dest)
+            if chunk["text"]:
+                await loop.run_in_executor(None, self._synthesize, chunk["text"], dest)
+            else:
+                await loop.run_in_executor(None, self._write_filler_audio, chunk["duration"], dest)
             generated.append(dest)
 
         narr = sec_audio / "narration.wav"
