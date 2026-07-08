@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api import projects, settings, jobs, ws, logs, images, voice, subtitles, video, queue, thumbnail, metadata, wan2, services, narrator, shorts, content, ai_news, pipeline, blog
+from app.api import projects, settings, jobs, ws, logs, images, voice, subtitles, video, queue, thumbnail, metadata, wan2, services, narrator, shorts, content, ai_news, pipeline, blog, webhooks, youtube
 
 api_router = APIRouter()
 
@@ -23,3 +23,5 @@ api_router.include_router(content.router, prefix="/content", tags=["content"])
 api_router.include_router(ai_news.router, prefix="/ai-news", tags=["ai-news"])
 api_router.include_router(pipeline.router, prefix="/pipeline", tags=["pipeline"])
 api_router.include_router(blog.router, prefix="/blog", tags=["blog"])
+api_router.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
+api_router.include_router(youtube.router, prefix="/youtube", tags=["youtube"])

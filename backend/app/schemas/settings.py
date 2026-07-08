@@ -80,6 +80,31 @@ class OutputSettings(BaseModel):
     export_format: str = Field(default="mp4")
 
 
+class WhatsAppSettings(BaseModel):
+    phone_number_id: str = Field(default="")
+    access_token: str = Field(default="")
+    webhook_verify_token: str = Field(default="")
+    app_secret: str = Field(default="")
+    recipient_number: str = Field(default="")   # E.164, e.g. "15551234567"
+    enabled: bool = Field(default=False)
+
+
+class YouTubeSettings(BaseModel):
+    client_id: str = Field(default="")
+    client_secret: str = Field(default="")
+    refresh_token: str = Field(default="")
+    channel_id: str = Field(default="")
+    default_privacy_status: str = Field(default="unlisted")  # "public" | "unlisted" | "private"
+
+
+class AutomationSettings(BaseModel):
+    deep_dive_enabled: bool = Field(default=False)
+    deep_dive_cron: str = Field(default="0 6 * * *")
+    ai_news_enabled: bool = Field(default=False)
+    ai_news_cron: str = Field(default="0 7 * * *")
+    default_language: str = Field(default="en")
+
+
 class SettingsUpdate(BaseModel):
     flux: Optional[FluxSettings] = None
     piper: Optional[PiperSettings] = None
@@ -91,6 +116,9 @@ class SettingsUpdate(BaseModel):
     whisper_model: Optional[str] = None
     whisper_language: Optional[str] = None
     whisper_device: Optional[str] = None
+    whatsapp: Optional[WhatsAppSettings] = None
+    youtube: Optional[YouTubeSettings] = None
+    automation: Optional[AutomationSettings] = None
 
 
 class SettingsResponse(BaseModel):
@@ -104,3 +132,6 @@ class SettingsResponse(BaseModel):
     whisper_model: str = "base"
     whisper_language: str = "en"
     whisper_device: str = "cpu"
+    whatsapp: WhatsAppSettings = Field(default_factory=WhatsAppSettings)
+    youtube: YouTubeSettings = Field(default_factory=YouTubeSettings)
+    automation: AutomationSettings = Field(default_factory=AutomationSettings)

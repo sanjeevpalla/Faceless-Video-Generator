@@ -9,6 +9,11 @@ import {
   IconButton,
   Tooltip,
   Chip,
+  Alert,
+  AlertTitle,
+  List,
+  ListItem,
+  ListItemText,
 } from "@mui/material";
 import {
   Image as ImageIcon,
@@ -71,6 +76,27 @@ export default function ProjectPage() {
   const generationProgress = useProjectStore((s) => s.generationProgress);
   const { data: project, isLoading, refetch } = useProject(currentProject?.id);
   const updateProgress = useProjectStore((s) => s.updateProgress);
+  const pipelineState = useProjectStore((s) => s.pipelineState);
+  const updatePipelineState = useProjectStore((s) => s.updatePipelineState);
+
+  // Hydrate the "awaiting WhatsApp reply" banner from persisted project state on
+  // load — the live WebSocket event only fires while the app is open; a client
+  // reconnecting hours later needs this to reflect the actual project state.
+  useEffect(() => {
+    const wa = (project?.resume_state as { whatsapp?: { status?: string; candidate_topics?: { id: string; title: string; summary: string }[]; whatsapp_message_id?: string } } | undefined)?.whatsapp;
+    if (wa?.status === "awaiting_whatsapp_reply") {
+      updatePipelineState({
+        status: "awaiting_input",
+        awaitingWhatsapp: {
+          candidateTopics: wa.candidate_topics ?? [],
+          whatsappMessageId: wa.whatsapp_message_id ?? "",
+        },
+      });
+    } else if (pipelineState.awaitingWhatsapp) {
+      updatePipelineState({ awaitingWhatsapp: null });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project?.id, project?.resume_state]);
 
   // On project open, snapshot actual output counts so already-done steps show 100%
   useEffect(() => {
@@ -252,6 +278,26 @@ export default function ProjectPage() {
           })()}
         </Box>
       </Box>
+
+      {/* Awaiting WhatsApp topic approval */}
+      {pipelineState.awaitingWhatsapp && (
+        <Alert severity="info" sx={{ mb: 3 }}>
+          <AlertTitle>Waiting for your WhatsApp reply</AlertTitle>
+          Check WhatsApp and tap a topic below to continue this project.
+          <List dense sx={{ mt: 0.5 }}>
+            {pipelineState.awaitingWhatsapp.candidateTopics.map((t) => (
+              <ListItem key={t.id} disableGutters sx={{ py: 0 }}>
+                <ListItemText
+                  primary={t.title}
+                  secondary={t.summary}
+                  primaryTypographyProps={{ variant: "body2", fontWeight: 600 }}
+                  secondaryTypographyProps={{ variant: "caption" }}
+                />
+              </ListItem>
+            ))}
+          </List>
+        </Alert>
+      )}
 
       {/* Generation Steps */}
       <Typography variant="h6" fontWeight={700} sx={{ mb: 2 }}>Generation Steps</Typography>

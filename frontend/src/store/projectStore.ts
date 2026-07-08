@@ -50,18 +50,31 @@ export interface PipelineStepState {
   totalSteps: number;
 }
 
+export interface TrendCandidate {
+  id: string;
+  title: string;
+  summary: string;
+}
+
+export interface AwaitingWhatsAppState {
+  candidateTopics: TrendCandidate[];
+  whatsappMessageId: string;
+}
+
 export interface PipelineRunState {
-  status: "idle" | "running" | "completed" | "failed";
+  status: "idle" | "running" | "awaiting_input" | "completed" | "failed";
   progress: number;
   currentStep: PipelineStepState | null;
   error?: string;
   jobId?: string;
+  awaitingWhatsapp: AwaitingWhatsAppState | null;
 }
 
 const defaultPipelineState = (): PipelineRunState => ({
   status: "idle",
   progress: 0,
   currentStep: null,
+  awaitingWhatsapp: null,
 });
 
 export interface ContentStepState {

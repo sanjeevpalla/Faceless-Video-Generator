@@ -42,6 +42,14 @@ deep-translator==1.11.4
 # Gemini AI (content generation pipeline)
 google-genai>=1.0.0
 
+# YouTube Data API upload (final automation step) + OAuth
+google-api-python-client>=2.140.0
+google-auth-httplib2>=0.2.0
+google-auth-oauthlib>=1.2.0
+
+# Automation scheduler (cron-triggered project creation)
+apscheduler>=3.10.4,<4.0.0
+
 # Utilities
 websockets>=13.0,<17.0
 

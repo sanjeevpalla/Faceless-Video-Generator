@@ -5,7 +5,10 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.settings import Setting
-from app.schemas.settings import FluxSettings, GeminiSettings, GoogleTTSSettings, PiperSettings, VideoSettings, OutputSettings
+from app.schemas.settings import (
+    AutomationSettings, FluxSettings, GeminiSettings, GoogleTTSSettings, OutputSettings,
+    PiperSettings, VideoSettings, WhatsAppSettings, YouTubeSettings,
+)
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -61,6 +64,22 @@ DEFAULT_SETTINGS = {
     "google_tts.voice_name": "",
     "google_tts.language_code": "",
     "google_tts.speaking_rate": 1.0,
+    "whatsapp.phone_number_id": "",
+    "whatsapp.access_token": "",
+    "whatsapp.webhook_verify_token": "",
+    "whatsapp.app_secret": "",
+    "whatsapp.recipient_number": "",
+    "whatsapp.enabled": False,
+    "youtube.client_id": "",
+    "youtube.client_secret": "",
+    "youtube.refresh_token": "",
+    "youtube.channel_id": "",
+    "youtube.default_privacy_status": "unlisted",
+    "automation.deep_dive_enabled": False,
+    "automation.deep_dive_cron": "0 6 * * *",
+    "automation.ai_news_enabled": False,
+    "automation.ai_news_cron": "0 7 * * *",
+    "automation.default_language": "en",
 }
 
 
@@ -145,3 +164,21 @@ class SettingsRepository:
         merged = {**{k.replace("google_tts.", ""): v for k, v in DEFAULT_SETTINGS.items() if k.startswith("google_tts.")}}
         merged.update({k.replace("google_tts.", ""): v for k, v in all_settings.items() if k.startswith("google_tts.")})
         return GoogleTTSSettings(**merged)
+
+    async def get_whatsapp_settings(self) -> WhatsAppSettings:
+        all_settings = await self.get_all()
+        merged = {**{k.replace("whatsapp.", ""): v for k, v in DEFAULT_SETTINGS.items() if k.startswith("whatsapp.")}}
+        merged.update({k.replace("whatsapp.", ""): v for k, v in all_settings.items() if k.startswith("whatsapp.")})
+        return WhatsAppSettings(**merged)
+
+    async def get_youtube_settings(self) -> YouTubeSettings:
+        all_settings = await self.get_all()
+        merged = {**{k.replace("youtube.", ""): v for k, v in DEFAULT_SETTINGS.items() if k.startswith("youtube.")}}
+        merged.update({k.replace("youtube.", ""): v for k, v in all_settings.items() if k.startswith("youtube.")})
+        return YouTubeSettings(**merged)
+
+    async def get_automation_settings(self) -> AutomationSettings:
+        all_settings = await self.get_all()
+        merged = {**{k.replace("automation.", ""): v for k, v in DEFAULT_SETTINGS.items() if k.startswith("automation.")}}
+        merged.update({k.replace("automation.", ""): v for k, v in all_settings.items() if k.startswith("automation.")})
+        return AutomationSettings(**merged)

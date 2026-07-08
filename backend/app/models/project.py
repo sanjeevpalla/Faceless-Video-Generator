@@ -12,6 +12,7 @@ from app.database import Base
 class ProjectStatus(str, PyEnum):
     CREATED = "created"
     PROCESSING = "processing"
+    AWAITING_INPUT = "awaiting_input"
     COMPLETED = "completed"
     FAILED = "failed"
     ARCHIVED = "archived"

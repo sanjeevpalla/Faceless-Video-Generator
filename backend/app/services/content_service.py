@@ -340,6 +340,23 @@ IMPORTANT: Description should include keywords naturally, be professional, inclu
 Return valid JSON only."""
 
 
+_TREND_CANDIDATES_PROMPT = """You are an expert AI industry analyst and YouTube growth strategist
+scouting topics for the "{channel}" channel.
+
+TODAY'S DATE: {today}
+
+TASK: Use Google Search to find {count} trending, currently-newsworthy topics (from the last few
+days, since {yesterday}) that would make strong long-form documentary/deep-dive video topics for
+this channel. Do NOT use training data — only use live search results.
+
+Return ONLY a JSON array (no Markdown, no commentary) of exactly {count} objects, ordered from
+strongest to weakest topic, each shaped like:
+[{{"title": "short punchy topic title, 6 words or fewer", "summary": "one sentence, 15 words or fewer, explaining why this is compelling right now"}}]
+
+Keep "title" concise enough to display in a mobile chat UI — it will be truncated at 24
+characters, so front-load the most important words. Keep "summary" under 72 characters."""
+
+
 # ── Service ────────────────────────────────────────────────────────────────────
 
 class ContentGenerationService:
@@ -630,6 +647,50 @@ class ContentGenerationService:
         result = await self._call(prompt, model_name=self.pro_model, with_search=True)
         (self.input_dir / "trends.txt").write_text(result, encoding="utf-8")
         await self._report(100, "Trend discovery complete", "trends")
+        return result
+
+    async def discover_trend_candidates(self, n: int = 10) -> List[Dict[str, str]]:
+        """Structured trend-candidate discovery for the WhatsApp HITL gate.
+
+        Returns up to `n` candidates shaped [{"id", "title", "summary"}, ...],
+        capped at 10 to match Meta's WhatsApp interactive-list row limit.
+        """
+        n = min(n, 10)
+        await self._report(5, "Searching for structured trend candidates…", "trend_discovery")
+        today = date.today()
+        yesterday = today - timedelta(days=3)
+        prompt = _TREND_CANDIDATES_PROMPT.format(
+            today=today.strftime("%B %d, %Y"),
+            yesterday=yesterday.strftime("%B %d, %Y"),
+            count=n,
+            channel=self.channel_name,
+        )
+
+        async def _attempt(retry_prompt: str) -> Optional[List[Dict[str, str]]]:
+            raw = await self._call(retry_prompt, model_name=self.pro_model, with_search=True)
+            json_text = self._extract_json(raw)
+            try:
+                parsed = json.loads(json_text)
+            except json.JSONDecodeError:
+                return None
+            if not isinstance(parsed, list) or not parsed:
+                return None
+            return parsed
+
+        candidates = await _attempt(prompt)
+        if candidates is None:
+            candidates = await _attempt(
+                prompt + "\n\nReturn ONLY a valid JSON array — no Markdown fences, no commentary."
+            )
+        if candidates is None:
+            from app.core.exceptions import ServiceError
+            raise ServiceError("content", "Trend candidate discovery did not return valid JSON")
+
+        result = [
+            {"id": str(i), "title": str(c.get("title", "")).strip(), "summary": str(c.get("summary", "")).strip()}
+            for i, c in enumerate(candidates[:n])
+        ]
+        await self._report(100, f"Found {len(result)} trend candidates", "trend_discovery")
         return result
 
     # ── Step 2: Research ──────────────────────────────────────────────────────

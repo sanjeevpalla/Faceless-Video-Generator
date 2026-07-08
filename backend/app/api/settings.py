@@ -96,6 +96,9 @@ async def get_settings(
     video = await repo.get_video_settings()
     output = await repo.get_output_settings()
     gemini = await repo.get_gemini_settings()
+    whatsapp = await repo.get_whatsapp_settings()
+    youtube = await repo.get_youtube_settings()
+    automation = await repo.get_automation_settings()
     whisper_model = await repo.get_by_key("whisper.model") or "base"
     whisper_language = await repo.get_by_key("whisper.language") or "en"
     whisper_device = await repo.get_by_key("whisper.device") or "cpu"
@@ -109,6 +112,9 @@ async def get_settings(
         video=video,
         output=output,
         gemini=gemini,
+        whatsapp=whatsapp,
+        youtube=youtube,
+        automation=automation,
         whisper_model=str(whisper_model),
         whisper_language=str(whisper_language),
         whisper_device=str(whisper_device),
@@ -158,6 +164,20 @@ async def update_settings(
 
     if data.whisper_device is not None:
         await repo.set_value("whisper.device", data.whisper_device, category="whisper")
+
+    if data.whatsapp:
+        whatsapp_dict = {f"whatsapp.{k}": v for k, v in data.whatsapp.model_dump().items()}
+        await repo.set_bulk(whatsapp_dict)
+
+    if data.youtube:
+        youtube_dict = {f"youtube.{k}": v for k, v in data.youtube.model_dump().items()}
+        await repo.set_bulk(youtube_dict)
+
+    if data.automation:
+        automation_dict = {f"automation.{k}": v for k, v in data.automation.model_dump().items()}
+        await repo.set_bulk(automation_dict)
+        from app.workers.scheduler import automation_scheduler
+        await automation_scheduler.reschedule(repo)
 
     return await get_settings(repo=repo)
 

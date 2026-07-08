@@ -76,6 +76,31 @@ export interface OutputSettings {
   export_format: string;
 }
 
+export interface WhatsAppSettings {
+  phone_number_id: string;
+  access_token: string;
+  webhook_verify_token: string;
+  app_secret: string;
+  recipient_number: string;
+  enabled: boolean;
+}
+
+export interface YouTubeSettings {
+  client_id: string;
+  client_secret: string;
+  refresh_token: string;
+  channel_id: string;
+  default_privacy_status: string; // "public" | "unlisted" | "private"
+}
+
+export interface AutomationSettings {
+  deep_dive_enabled: boolean;
+  deep_dive_cron: string;
+  ai_news_enabled: boolean;
+  ai_news_cron: string;
+  default_language: string;
+}
+
 export interface AppSettings {
   flux: FluxSettings;
   piper: PiperSettings;
@@ -87,6 +112,9 @@ export interface AppSettings {
   whisper_model: string;
   whisper_language: string;
   whisper_device: string;
+  whatsapp: WhatsAppSettings;
+  youtube: YouTubeSettings;
+  automation: AutomationSettings;
 }
 
 export interface SettingsUpdate {
@@ -100,6 +128,9 @@ export interface SettingsUpdate {
   whisper_model?: string;
   whisper_language?: string;
   whisper_device?: string;
+  whatsapp?: Partial<WhatsAppSettings>;
+  youtube?: Partial<YouTubeSettings>;
+  automation?: Partial<AutomationSettings>;
 }
 
 export interface GeminiImageModel {
@@ -127,6 +158,13 @@ export const settingsApi = {
 
   listGeminiImageModels: async (): Promise<{ models: GeminiImageModel[]; all_count: number }> => {
     const response = await apiClient.get("/settings/gemini/image-models");
+    return response.data;
+  },
+};
+
+export const youtubeApi = {
+  oauthStatus: async (): Promise<{ connected: boolean }> => {
+    const response = await apiClient.get("/youtube/oauth/status");
     return response.data;
   },
 };

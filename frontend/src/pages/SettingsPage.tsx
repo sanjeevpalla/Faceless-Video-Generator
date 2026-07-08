@@ -42,10 +42,14 @@ import {
   ImageSearch as ImageBackendIcon,
   Cloud as CloudIcon,
   Bolt as PipelineIcon,
+  WhatsApp as WhatsAppIcon,
+  YouTube as YouTubeIcon,
+  Schedule as ScheduleIcon,
 } from "@mui/icons-material";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { narratorApi } from "../api/narrator";
-import { settingsApi, AppSettings, GoogleTTSSettings, SettingsUpdate, GeminiImageModel } from "../api/settings";
+import { settingsApi, youtubeApi, AppSettings, GoogleTTSSettings, WhatsAppSettings, YouTubeSettings, AutomationSettings, SettingsUpdate, GeminiImageModel } from "../api/settings";
+import { BASE_URL } from "../api/client";
 import { useAppStore } from "../store/appStore";
 import { servicesApi } from "../api/services";
 import { imagesApi } from "../api/images";
@@ -157,6 +161,9 @@ export default function SettingsPage() {
   const [logoError, setLogoError] = useState<string | null>(null);
   const [showApiKey, setShowApiKey] = useState(false);
   const [showGoogleApiKey, setShowGoogleApiKey] = useState(false);
+  const [showWhatsAppToken, setShowWhatsAppToken] = useState(false);
+  const [showWhatsAppSecret, setShowWhatsAppSecret] = useState(false);
+  const [showYoutubeSecret, setShowYoutubeSecret] = useState(false);
   const [imageModels, setImageModels] = useState<GeminiImageModel[]>([]);
   const [imageModelsError, setImageModelsError] = useState<string | null>(null);
 
@@ -257,6 +264,26 @@ export default function SettingsPage() {
     setLocalSettings({ ...localSettings, gemini: { ...localSettings.gemini, [key]: value } });
   };
 
+  const updateWhatsApp = (key: keyof WhatsAppSettings, value: unknown) => {
+    if (!localSettings) return;
+    setLocalSettings({ ...localSettings, whatsapp: { ...localSettings.whatsapp, [key]: value } });
+  };
+
+  const updateYouTube = (key: keyof YouTubeSettings, value: unknown) => {
+    if (!localSettings) return;
+    setLocalSettings({ ...localSettings, youtube: { ...localSettings.youtube, [key]: value } });
+  };
+
+  const updateAutomation = (key: keyof AutomationSettings, value: unknown) => {
+    if (!localSettings) return;
+    setLocalSettings({ ...localSettings, automation: { ...localSettings.automation, [key]: value } });
+  };
+
+  const { data: youtubeStatus, refetch: refetchYoutubeStatus } = useQuery({
+    queryKey: ["youtube-oauth-status"],
+    queryFn: youtubeApi.oauthStatus,
+  });
+
   const handleSave = () => {
     if (!localSettings) return;
     const update: SettingsUpdate = {
@@ -270,6 +297,9 @@ export default function SettingsPage() {
       whisper_model: localSettings.whisper_model,
       whisper_language: localSettings.whisper_language,
       whisper_device: localSettings.whisper_device,
+      whatsapp: localSettings.whatsapp,
+      youtube: localSettings.youtube,
+      automation: localSettings.automation,
     };
     updateMutation.mutate(update);
   };
@@ -1287,6 +1317,252 @@ export default function SettingsPage() {
               </Box>
             )}
           </Box>
+        </AccordionDetails>
+      </Accordion>
+
+      {/* WhatsApp HITL Gate */}
+      <Accordion>
+        <AccordionSummary expandIcon={<ExpandIcon />}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+            <WhatsAppIcon sx={{ color: "success.main" }} />
+            <Typography fontWeight={700}>WhatsApp (Deep Dive Topic Approval)</Typography>
+            {localSettings.whatsapp.enabled && (
+              <Chip label="ON" size="small" color="success" sx={{ ml: 1 }} />
+            )}
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Grid container spacing={2.5}>
+            <Grid item xs={12}>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={localSettings.whatsapp.enabled}
+                    onChange={(e) => updateWhatsApp("enabled", e.target.checked)}
+                    color="success"
+                  />
+                }
+                label="Enable WhatsApp topic-approval gate for Deep Dive"
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                label="Phone Number ID"
+                value={localSettings.whatsapp.phone_number_id}
+                onChange={(e) => updateWhatsApp("phone_number_id", e.target.value)}
+                placeholder="From Meta for Developers → WhatsApp → API Setup"
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                label="Recipient Number (E.164)"
+                value={localSettings.whatsapp.recipient_number}
+                onChange={(e) => updateWhatsApp("recipient_number", e.target.value)}
+                placeholder="15551234567"
+              />
+            </Grid>
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                label="Access Token"
+                type={showWhatsAppToken ? "text" : "password"}
+                value={localSettings.whatsapp.access_token}
+                onChange={(e) => updateWhatsApp("access_token", e.target.value)}
+                InputProps={{
+                  endAdornment: (
+                    <IconButton onClick={() => setShowWhatsAppToken((v) => !v)} edge="end" size="small">
+                      {showWhatsAppToken ? <HideIcon /> : <ShowIcon />}
+                    </IconButton>
+                  ),
+                }}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                label="Webhook Verify Token"
+                value={localSettings.whatsapp.webhook_verify_token}
+                onChange={(e) => updateWhatsApp("webhook_verify_token", e.target.value)}
+                helperText="Any string you choose — enter the same value when configuring the webhook in Meta"
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                label="App Secret"
+                type={showWhatsAppSecret ? "text" : "password"}
+                value={localSettings.whatsapp.app_secret}
+                onChange={(e) => updateWhatsApp("app_secret", e.target.value)}
+                helperText="Used to verify webhook signatures (X-Hub-Signature-256)"
+                InputProps={{
+                  endAdornment: (
+                    <IconButton onClick={() => setShowWhatsAppSecret((v) => !v)} edge="end" size="small">
+                      {showWhatsAppSecret ? <HideIcon /> : <ShowIcon />}
+                    </IconButton>
+                  ),
+                }}
+              />
+            </Grid>
+          </Grid>
+          <Alert severity="info" sx={{ mt: 2 }}>
+            Uses the official Meta WhatsApp Cloud API (free tier). During local development, run a
+            tunnel (ngrok / Cloudflare Tunnel) pointed at this backend and register
+            <code> {BASE_URL}/api/v1/webhooks/whatsapp</code> as the webhook URL in your Meta app.
+          </Alert>
+          <Alert severity="warning" sx={{ mt: 1.5 }}>
+            Meta only allows free-form/interactive messages within 24 hours of the recipient's last
+            message to this WhatsApp number. For unattended daily automation, message the business
+            number at least once every 24h to keep the window open, or set up an approved template
+            as a fallback opener.
+          </Alert>
+        </AccordionDetails>
+      </Accordion>
+
+      {/* YouTube Upload */}
+      <Accordion>
+        <AccordionSummary expandIcon={<ExpandIcon />}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+            <YouTubeIcon sx={{ color: "error.main" }} />
+            <Typography fontWeight={700}>YouTube Upload</Typography>
+            {youtubeStatus?.connected && (
+              <Chip label="Connected" size="small" color="success" sx={{ ml: 1 }} />
+            )}
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Grid container spacing={2.5}>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                label="OAuth Client ID"
+                value={localSettings.youtube.client_id}
+                onChange={(e) => updateYouTube("client_id", e.target.value)}
+                placeholder="From Google Cloud Console → Credentials"
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                label="OAuth Client Secret"
+                type={showYoutubeSecret ? "text" : "password"}
+                value={localSettings.youtube.client_secret}
+                onChange={(e) => updateYouTube("client_secret", e.target.value)}
+                InputProps={{
+                  endAdornment: (
+                    <IconButton onClick={() => setShowYoutubeSecret((v) => !v)} edge="end" size="small">
+                      {showYoutubeSecret ? <HideIcon /> : <ShowIcon />}
+                    </IconButton>
+                  ),
+                }}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <FormControl fullWidth>
+                <InputLabel>Default Privacy</InputLabel>
+                <Select
+                  value={localSettings.youtube.default_privacy_status}
+                  onChange={(e) => updateYouTube("default_privacy_status", e.target.value)}
+                  label="Default Privacy"
+                >
+                  <MenuItem value="unlisted">Unlisted</MenuItem>
+                  <MenuItem value="private">Private</MenuItem>
+                  <MenuItem value="public">Public</MenuItem>
+                </Select>
+              </FormControl>
+            </Grid>
+            <Grid item xs={12} sm={6} sx={{ display: "flex", alignItems: "center" }}>
+              <Button
+                variant="outlined"
+                color="error"
+                startIcon={<YouTubeIcon />}
+                href={`${BASE_URL}/api/v1/youtube/oauth/start`}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setTimeout(() => refetchYoutubeStatus(), 5000)}
+              >
+                {youtubeStatus?.connected ? "Reconnect Channel" : "Connect YouTube Channel"}
+              </Button>
+            </Grid>
+          </Grid>
+          <Alert severity="info" sx={{ mt: 2 }}>
+            Save the Client ID/Secret above first, then click Connect. Create a Google Cloud OAuth
+            2.0 Client (type "Web application") with
+            <code> {BASE_URL}/api/v1/youtube/oauth/callback</code> added to its Authorized redirect
+            URIs.
+          </Alert>
+        </AccordionDetails>
+      </Accordion>
+
+      {/* Automation Scheduler */}
+      <Accordion>
+        <AccordionSummary expandIcon={<ExpandIcon />}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+            <ScheduleIcon sx={{ color: "secondary.main" }} />
+            <Typography fontWeight={700}>Automation Schedule</Typography>
+            {(localSettings.automation.deep_dive_enabled || localSettings.automation.ai_news_enabled) && (
+              <Chip label="ON" size="small" color="secondary" sx={{ ml: 1 }} />
+            )}
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Grid container spacing={2.5}>
+            <Grid item xs={12} sm={6}>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={localSettings.automation.deep_dive_enabled}
+                    onChange={(e) => updateAutomation("deep_dive_enabled", e.target.checked)}
+                  />
+                }
+                label="Auto-create Deep Dive projects"
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                label="Deep Dive Cron"
+                value={localSettings.automation.deep_dive_cron}
+                onChange={(e) => updateAutomation("deep_dive_cron", e.target.value)}
+                helperText="Standard 5-field cron, e.g. '0 6 * * *' = daily at 6am"
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={localSettings.automation.ai_news_enabled}
+                    onChange={(e) => updateAutomation("ai_news_enabled", e.target.checked)}
+                  />
+                }
+                label="Auto-create AI News projects"
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                label="AI News Cron"
+                value={localSettings.automation.ai_news_cron}
+                onChange={(e) => updateAutomation("ai_news_cron", e.target.value)}
+                helperText="e.g. '0 7 * * *' = daily at 7am"
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                label="Default Project Language"
+                value={localSettings.automation.default_language}
+                onChange={(e) => updateAutomation("default_language", e.target.value)}
+                placeholder="en"
+              />
+            </Grid>
+          </Grid>
+          <Alert severity="info" sx={{ mt: 2 }}>
+            On each scheduled run the app creates a new project and starts its pipeline
+            automatically. Deep Dive projects then pause for WhatsApp topic approval; AI News
+            projects run fully unattended, auto-picking the top scraped stories.
+          </Alert>
         </AccordionDetails>
       </Accordion>
     </Box>

@@ -44,12 +44,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await queue_manager.start()
     logger.info("Queue manager started")
 
+    # Start automation scheduler (cron-triggered project creation)
+    from app.workers.scheduler import automation_scheduler
+    await automation_scheduler.start()
+
     logger.info(f"Server ready at http://{settings.HOST}:{settings.PORT}")
 
     yield
 
     # Shutdown
     logger.info("Shutting down...")
+    await automation_scheduler.stop()
     await queue_manager.stop()
     logger.info("Shutdown complete")
 

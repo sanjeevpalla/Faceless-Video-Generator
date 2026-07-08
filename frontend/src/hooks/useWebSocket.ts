@@ -336,6 +336,38 @@ export function useWebSocket({
           break;
         }
 
+        case "pipeline_awaiting_input": {
+          updatePipelineState({ status: "awaiting_input", currentStep: null });
+          if (job_id) removeActiveJob(String(job_id));
+          break;
+        }
+
+        case "awaiting_whatsapp_reply": {
+          updatePipelineState({
+            status: "awaiting_input",
+            awaitingWhatsapp: {
+              candidateTopics: (data.candidate_topics as { id: string; title: string; summary: string }[]) ?? [],
+              whatsappMessageId: String(data.whatsapp_message_id ?? ""),
+            },
+          });
+          addNotification({
+            type: "info",
+            title: "Waiting for your WhatsApp reply",
+            message: "Pick a topic in WhatsApp to continue this project.",
+          });
+          break;
+        }
+
+        case "whatsapp_topic_selected": {
+          updatePipelineState({ status: "running", awaitingWhatsapp: null });
+          addNotification({
+            type: "success",
+            title: "Topic selected",
+            message: String((data.selected_topic as { title?: string } | undefined)?.title ?? ""),
+          });
+          break;
+        }
+
         case "pipeline_failed": {
           updatePipelineState({
             status: "failed",

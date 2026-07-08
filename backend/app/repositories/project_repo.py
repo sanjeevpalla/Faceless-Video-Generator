@@ -122,3 +122,70 @@ class ProjectRepository:
             select(Project.status, func.count(Project.id)).group_by(Project.status)
         )
         return {row[0]: row[1] for row in result.all()}
+
+    # ── WhatsApp HITL gate ───────────────────────────────────────────────────
+
+    async def set_awaiting_whatsapp_reply(
+        self,
+        project_id: str,
+        candidates: List[Dict[str, Any]],
+        whatsapp_message_id: str,
+        job_id: str,
+    ) -> Optional[Project]:
+        project = await self.get_by_id(project_id)
+        if not project:
+            return None
+        resume_data = dict(project.resume_state or {})
+        resume_data["whatsapp"] = {
+            "status": "awaiting_whatsapp_reply",
+            "candidate_topics": candidates,
+            "whatsapp_message_id": whatsapp_message_id,
+            "job_id": job_id,
+            "sent_at": datetime.utcnow().isoformat(),
+            "selected_topic": None,
+        }
+        await self.update(project_id, resume_state=resume_data, status=ProjectStatus.AWAITING_INPUT)
+        return await self.get_by_id(project_id)
+
+    async def resolve_whatsapp_reply(
+        self, project_id: str, selected_topic: Dict[str, Any]
+    ) -> Optional[Project]:
+        project = await self.get_by_id(project_id)
+        if not project:
+            return None
+        resume_data = dict(project.resume_state or {})
+        wa = dict(resume_data.get("whatsapp") or {})
+        if wa.get("status") != "awaiting_whatsapp_reply":
+            return project  # already resolved — idempotent no-op
+        wa["status"] = "resolved"
+        wa["selected_topic"] = selected_topic
+        resume_data["whatsapp"] = wa
+        resume_data["last_completed_step"] = "trend_discovery"
+        await self.update(project_id, resume_state=resume_data, status=ProjectStatus.CREATED)
+        return await self.get_by_id(project_id)
+
+    async def clear_awaiting_whatsapp_reply(self, project_id: str) -> Optional[Project]:
+        project = await self.get_by_id(project_id)
+        if not project:
+            return None
+        resume_data = dict(project.resume_state or {})
+        resume_data.pop("whatsapp", None)
+        await self.update(project_id, resume_state=resume_data, status=ProjectStatus.CREATED)
+        return await self.get_by_id(project_id)
+
+    async def get_by_pending_whatsapp_message_id(self, whatsapp_message_id: str) -> Optional[Project]:
+        """Look up the project a WhatsApp reply belongs to, by the outbound message id
+        it's replying to — matches regardless of whether that prompt is still pending
+        or already resolved, so a duplicate/retried webhook delivery can still be
+        recognised as "already_resolved" instead of falling through as unmatched.
+
+        Filters in Python rather than a SQLite json_extract WHERE clause — the
+        expected row count is always small for a single-user app, so this avoids
+        any dependency on SQLite's JSON1 extension being available.
+        """
+        result = await self.db.execute(select(Project))
+        for project in result.scalars().all():
+            wa = (project.resume_state or {}).get("whatsapp") or {}
+            if wa.get("whatsapp_message_id") == whatsapp_message_id:
+                return project
+        return None
