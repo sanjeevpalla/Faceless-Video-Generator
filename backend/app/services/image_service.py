@@ -148,7 +148,7 @@ class ImageGenerationService(BaseService):
         original_flux_settings = self.flux_settings
         self.images_dir = sec_images_dir
         if vertical:
-            self.flux_settings = {**self.flux_settings, "width": 1080, "height": 1920}
+            self.flux_settings = {**self.flux_settings, **self._vertical_dimensions()}
 
         total = len(scenes)
         results, failed = [], []
@@ -194,6 +194,21 @@ class ImageGenerationService(BaseService):
         await self.report_progress(100, f"Section '{section_label}' images done — {len(results)}/{total}")
         return {"label": section_label, "vertical": vertical, "total": total, "generated": len(results),
                 "failed": failed, "images": results}
+
+    def _vertical_dimensions(self) -> Dict[str, int]:
+        """9:16 width/height matching the configured horizontal pixel budget.
+
+        Shot images used to always render at a hardcoded 1080x1920 regardless of
+        the configured flux.width/height, so a lower horizontal setting (e.g.
+        1280x720, ~2.25x fewer pixels than 1080x1920) generated 16:9 images fast
+        but left 9:16 shot images just as slow as native full-res.
+        """
+        base_w = self.flux_settings.get("width", 1920)
+        base_h = self.flux_settings.get("height", 1080)
+        total_px = base_w * base_h
+        v_w = max(8, round((total_px * 9 / 16) ** 0.5 / 8) * 8)
+        v_h = max(8, round((total_px * 16 / 9) ** 0.5 / 8) * 8)
+        return {"width": v_w, "height": v_h}
 
     async def generate_all(self) -> Dict[str, Any]:
         prompts_file = self.project_dir / "input" / "image_prompts.txt"
