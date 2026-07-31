@@ -37,6 +37,28 @@ def _project_dir(project) -> Path:
     return Path(project.project_dir) if project.project_dir else (settings.PROJECTS_DIR / project.id)
 
 
+def _is_primary(project, language: Optional[str]) -> bool:
+    return (language or project.language or "en") == (project.language or "en")
+
+
+def _output_dir_for(project_dir: Path, project, language: Optional[str]) -> Path:
+    if _is_primary(project, language):
+        return project_dir / "output"
+    return project_dir / "output" / language
+
+
+def _audio_dir_for(project_dir: Path, project, language: Optional[str]) -> Path:
+    if _is_primary(project, language):
+        return project_dir / "audio"
+    return project_dir / "audio" / language
+
+
+def _subs_dir_for(project_dir: Path, project, language: Optional[str]) -> Path:
+    if _is_primary(project, language):
+        return project_dir / "subtitles"
+    return project_dir / "subtitles" / language
+
+
 def _read_manifest(output_dir: Path) -> Optional[Dict[str, Any]]:
     p = output_dir / "manifest.json"
     if p.exists():
@@ -53,6 +75,7 @@ def _read_manifest(output_dir: Path) -> Optional[Dict[str, Any]]:
 @router.get("/project/{project_id}")
 async def get_video_status(
     project_id: str,
+    language: Optional[str] = Query(None),
     project_repo: ProjectRepository = Depends(get_project_repo),
 ):
     project = await project_repo.get_by_id(project_id)
@@ -60,7 +83,7 @@ async def get_video_status(
         raise ProjectNotFoundError(project_id)
 
     pdir = _project_dir(project)
-    output_dir = pdir / "output"
+    output_dir = _output_dir_for(pdir, project, language)
     final_path = output_dir / "video_final.mp4"
     manifest = _read_manifest(output_dir)
 
@@ -84,20 +107,22 @@ async def get_video_status(
 @router.get("/project/{project_id}/file")
 async def get_video_file(
     project_id: str,
+    language: Optional[str] = Query(None),
     project_repo: ProjectRepository = Depends(get_project_repo),
 ):
     project = await project_repo.get_by_id(project_id)
     if not project:
         raise ProjectNotFoundError(project_id)
 
-    path = _project_dir(project) / "output" / "video_final.mp4"
+    path = _output_dir_for(_project_dir(project), project, language) / "video_final.mp4"
     if not path.exists():
         raise HTTPException(status_code=404, detail="Final video not rendered yet")
 
+    suffix = f"_{language}" if language and language != (project.language or "en") else ""
     return FileResponse(
         str(path),
         media_type="video/mp4",
-        filename=f"{project.name}.mp4",
+        filename=f"{project.name}{suffix}.mp4",
         headers={"Accept-Ranges": "bytes"},
     )
 
@@ -108,6 +133,7 @@ async def get_video_file(
 @router.get("/project/{project_id}/assets")
 async def get_render_assets(
     project_id: str,
+    language: Optional[str] = Query(None),
     project_repo: ProjectRepository = Depends(get_project_repo),
 ):
     project = await project_repo.get_by_id(project_id)
@@ -116,16 +142,18 @@ async def get_render_assets(
 
     pdir = _project_dir(project)
     project_type = getattr(project, "project_type", None) or "deep_dive"
+    audio_dir = _audio_dir_for(pdir, project, language)
+    subs_dir = _subs_dir_for(pdir, project, language)
 
     music_files = list((pdir / "input").glob("*.mp3")) + list((pdir / "input").glob("*.wav"))
-    srt_exists = (pdir / "subtitles" / "subtitles.srt").exists()
+    srt_exists = (subs_dir / "subtitles.srt").exists()
 
     if project_type == "ai_news":
-        # AI news images live in images/sections/{label}/scene_*.png
+        # AI news images live in images/sections/{label}/scene_*.png — shared across languages
         section_images = list((pdir / "images" / "sections").glob("*/scene_*.png"))
         images_ready = len(section_images)
-        # Check that at least one section has narration.wav
-        audio_sections_dir = pdir / "audio" / "sections"
+        # Check that at least one section has narration.wav (this language's audio dir)
+        audio_sections_dir = audio_dir / "sections"
         voice_sections = 0
         if audio_sections_dir.exists():
             voice_sections = sum(
@@ -138,7 +166,7 @@ async def get_render_assets(
     else:
         images = sorted((pdir / "images").glob("scene_*.png"))
         images_ready = len(images)
-        audio_merged = (pdir / "audio" / "narration_merged.wav").exists()
+        audio_merged = (audio_dir / "narration_merged.wav").exists()
         can_render = images_ready > 0
 
         # Estimate total duration from scenes.json
@@ -231,6 +259,7 @@ async def get_templates():
 @router.delete("/project/{project_id}")
 async def delete_video(
     project_id: str,
+    language: Optional[str] = Query(None),
     project_repo: ProjectRepository = Depends(get_project_repo),
 ):
     project = await project_repo.get_by_id(project_id)
@@ -238,7 +267,7 @@ async def delete_video(
         raise ProjectNotFoundError(project_id)
 
     pdir = _project_dir(project)
-    output_dir = pdir / "output"
+    output_dir = _output_dir_for(pdir, project, language)
     deleted = 0
     locked: List[str] = []
 

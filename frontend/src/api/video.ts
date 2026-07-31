@@ -50,17 +50,19 @@ export interface VideoTemplate {
   music_volume: number;
 }
 
+const langQuery = (language?: string) => (language ? `?language=${encodeURIComponent(language)}` : "");
+
 export const videoApi = {
-  getStatus: async (projectId: string): Promise<VideoStatus> => {
-    const r = await apiClient.get(`/video/project/${projectId}`);
+  getStatus: async (projectId: string, language?: string): Promise<VideoStatus> => {
+    const r = await apiClient.get(`/video/project/${projectId}${langQuery(language)}`);
     return r.data;
   },
 
-  getVideoUrl: (projectId: string): string =>
-    `/api/v1/video/project/${projectId}/file`,
+  getVideoUrl: (projectId: string, language?: string): string =>
+    `/api/v1/video/project/${projectId}/file${langQuery(language)}`,
 
-  getAssets: async (projectId: string): Promise<RenderAssets> => {
-    const r = await apiClient.get(`/video/project/${projectId}/assets`);
+  getAssets: async (projectId: string, language?: string): Promise<RenderAssets> => {
+    const r = await apiClient.get(`/video/project/${projectId}/assets${langQuery(language)}`);
     return r.data;
   },
 
@@ -74,8 +76,8 @@ export const videoApi = {
     return r.data;
   },
 
-  deleteOutputs: async (projectId: string): Promise<{ deleted_files: number; message: string }> => {
-    const r = await apiClient.delete(`/video/project/${projectId}`);
+  deleteOutputs: async (projectId: string, language?: string): Promise<{ deleted_files: number; message: string }> => {
+    const r = await apiClient.delete(`/video/project/${projectId}${langQuery(language)}`);
     return r.data;
   },
 };

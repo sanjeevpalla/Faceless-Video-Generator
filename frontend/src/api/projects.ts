@@ -5,6 +5,8 @@ export interface CreateProjectPayload {
   name: string;
   description?: string;
   language?: string;
+  languages?: string[];
+  language_voices?: Record<string, string>;
   project_type?: "deep_dive" | "ai_news";
 }
 
@@ -12,6 +14,7 @@ export interface UpdateProjectPayload {
   name?: string;
   description?: string;
   status?: string;
+  language_voices?: Record<string, string>;
 }
 
 export interface PaginatedResponse<T> {
@@ -32,6 +35,13 @@ export interface FileUploadStatus {
   path?: string;
 }
 
+export interface VoicePreviewEntry {
+  engine: "piper" | "google";
+  voice: string;
+}
+
+export type VoicePreview = Record<string, VoicePreviewEntry>;
+
 export const projectsApi = {
   list: async (params?: {
     page?: number;
@@ -45,6 +55,11 @@ export const projectsApi = {
 
   get: async (projectId: string): Promise<Project> => {
     const response = await apiClient.get(`/projects/${projectId}`);
+    return response.data;
+  },
+
+  getVoicePreview: async (projectId: string): Promise<VoicePreview> => {
+    const response = await apiClient.get(`/projects/${projectId}/voice-preview`);
     return response.data;
   },
 

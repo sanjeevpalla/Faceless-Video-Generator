@@ -103,12 +103,14 @@ async def get_settings(
     whisper_language = await repo.get_by_key("whisper.language") or "en"
     whisper_device = await repo.get_by_key("whisper.device") or "cpu"
     tts_engine = await repo.get_by_key("tts.engine") or "piper"
+    default_voices = await repo.get_by_key("tts.default_voices") or {}
 
     return SettingsResponse(
         flux=flux,
         piper=piper,
         google_tts=google_tts,
         tts_engine=str(tts_engine),
+        default_voices=dict(default_voices),
         video=video,
         output=output,
         gemini=gemini,
@@ -140,6 +142,9 @@ async def update_settings(
 
     if data.tts_engine is not None:
         await repo.set_value("tts.engine", data.tts_engine, category="tts")
+
+    if data.default_voices is not None:
+        await repo.set_value("tts.default_voices", data.default_voices, category="tts")
 
     if data.video:
         video_data = data.video.model_dump()
@@ -222,6 +227,26 @@ async def list_gemini_image_models(
     except Exception as exc:
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/voices/piper")
+async def list_piper_voices(language: str):
+    """Named, single-speaker Piper voices available for `language`, for the
+    per-language voice picker."""
+    from app.services.piper_model_manager import fetch_voice_catalog
+    return {"voices": await fetch_voice_catalog(language)}
+
+
+@router.get("/voices/google")
+async def list_google_voices(
+    language: str,
+    repo: SettingsRepository = Depends(get_settings_repo),
+):
+    """Google Cloud TTS voices available for `language`. Returns an empty list
+    (not an error) if no API key is configured yet."""
+    from app.services.google_tts_service import fetch_voice_catalog
+    gtts = await repo.get_google_tts_settings()
+    return {"voices": await fetch_voice_catalog(gtts.api_key, language)}
 
 
 @router.post("/reset", response_model=SettingsResponse)

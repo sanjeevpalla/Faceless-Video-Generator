@@ -1,5 +1,15 @@
 """
-TranslationService — translates project narration files to a target language.
+TranslationService — legacy Google-Translate fallback for translating an existing
+single-language project's narration files to a target language in place.
+
+Superseded by the LLM-native per-language generation path (see
+ContentGenerationService.generate_language_variant() / translate_scenes_narration(),
+wired into PipelineService's "language_variants" step) for any project whose
+`languages` list has more than one entry — that path produces idiomatic narration
+via the LLM rather than raw machine translation, and keeps each language's files
+in a separate `{lang}/` directory instead of overwriting the project in place.
+This service remains reachable via JobType.TRANSLATE for old-style single-language
+projects and ad-hoc/no-API-key translation needs.
 
 Uses deep-translator (Google Translate free tier, no API key required) to translate:
   - input/scenes.json  → narration + title per scene

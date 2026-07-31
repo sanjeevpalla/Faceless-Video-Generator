@@ -14,6 +14,8 @@ import {
   Tooltip,
   Divider,
   IconButton,
+  Tabs,
+  Tab,
 } from "@mui/material";
 import {
   PhotoCamera as ThumbnailIcon,
@@ -33,6 +35,7 @@ import StatusBadge from "../components/common/StatusBadge";
 import DeleteConfirmDialog from "../components/common/DeleteConfirmDialog";
 import ComfyUIControl from "../components/common/ComfyUIControl";
 import { useComfyUIStatus } from "../hooks/useImages";
+import { languageLabel } from "../constants/languages";
 
 const PROMPT_TAGS = [
   "4K quality",
@@ -53,7 +56,15 @@ export default function ThumbnailPage() {
   const regenerate = useRegenerateThumbnail();
 
   const queryClient = useQueryClient();
-  const { data: thumbStatus, isLoading } = useThumbnailStatus(currentProject?.id);
+  const primaryLanguage = currentProject?.language || "en";
+  const languages = currentProject?.languages && currentProject.languages.length > 1
+    ? currentProject.languages
+    : null;
+  const [activeLanguage, setActiveLanguage] = useState(primaryLanguage);
+  useEffect(() => { setActiveLanguage(primaryLanguage); }, [currentProject?.id, primaryLanguage]);
+  const isPrimaryLanguage = activeLanguage === primaryLanguage;
+
+  const { data: thumbStatus, isLoading } = useThumbnailStatus(currentProject?.id, activeLanguage);
   const { data: comfyStatus } = useComfyUIStatus();
   const [imgError, setImgError] = useState(false);
   const [imgLoaded, setImgLoaded] = useState(false);
@@ -67,19 +78,26 @@ export default function ThumbnailPage() {
   const isReady = thumbStatus?.status === "ready" && !imgError;
   const comfyOnline = comfyStatus?.online ?? false;
 
-  // Load existing prompt into the editor
+  // Load existing prompt into the editor — re-syncs when switching language tabs
   useEffect(() => {
-    if (thumbStatus?.prompt && !customPrompt) {
-      setCustomPrompt(thumbStatus.prompt);
-    }
-  }, [thumbStatus?.prompt]);
+    setCustomPrompt(thumbStatus?.prompt ?? "");
+  }, [thumbStatus?.prompt, activeLanguage]);
+
+  // Reset image preview state when switching language tabs
+  useEffect(() => {
+    setImgError(false);
+    setImgLoaded(false);
+  }, [activeLanguage]);
 
   const handleRegenerate = async () => {
     if (!currentProject) return;
     setImgError(false);
     setImgLoaded(false);
     try {
-      await regenerate.mutateAsync(currentProject.id);
+      await regenerate.mutateAsync({
+        projectId: currentProject.id,
+        language: isPrimaryLanguage ? undefined : activeLanguage,
+      });
     } catch (err) {
       console.error("Thumbnail regeneration failed:", err);
     }
@@ -89,8 +107,9 @@ export default function ThumbnailPage() {
     if (!currentProject) return;
     setDeleting(true);
     try {
-      await thumbnailApi.deleteOutputs(currentProject.id);
-      queryClient.invalidateQueries({ queryKey: THUMBNAIL_KEYS.status(currentProject.id) });
+      const lang = isPrimaryLanguage ? undefined : activeLanguage;
+      await thumbnailApi.deleteOutputs(currentProject.id, lang);
+      queryClient.invalidateQueries({ queryKey: THUMBNAIL_KEYS.status(currentProject.id, activeLanguage) });
       setImgError(false);
       setImgLoaded(false);
     } catch (err) {
@@ -103,7 +122,7 @@ export default function ThumbnailPage() {
 
   const handleDownload = () => {
     if (!currentProject || !isReady) return;
-    const url = thumbnailApi.getThumbnailUrl(currentProject.id);
+    const url = thumbnailApi.getThumbnailUrl(currentProject.id, isPrimaryLanguage ? undefined : activeLanguage);
     const a = document.createElement("a");
     a.href = url;
     a.download = `${currentProject.name}_thumbnail.png`;
@@ -130,7 +149,7 @@ export default function ThumbnailPage() {
     );
   }
 
-  const thumbnailUrl = thumbnailApi.getThumbnailUrl(currentProject.id);
+  const thumbnailUrl = thumbnailApi.getThumbnailUrl(currentProject.id, isPrimaryLanguage ? undefined : activeLanguage);
 
   return (
     <Box>
@@ -179,6 +198,19 @@ export default function ThumbnailPage() {
           </Tooltip>
         </Box>
       </Box>
+
+      {/* Language tabs — each language gets its own independent FLUX render */}
+      {languages && (
+        <Tabs
+          value={activeLanguage}
+          onChange={(_, v) => setActiveLanguage(v)}
+          sx={{ mb: 2, minHeight: 36, "& .MuiTab-root": { minHeight: 36, py: 0.5 } }}
+        >
+          {languages.map((code) => (
+            <Tab key={code} value={code} label={languageLabel(code)} />
+          ))}
+        </Tabs>
+      )}
 
       <DeleteConfirmDialog
         open={deleteOpen}

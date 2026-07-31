@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import List, Optional
 
@@ -104,6 +105,7 @@ async def trigger_job(
     project_id: str,
     job_type: str,
     background_tasks: BackgroundTasks,
+    language: Optional[str] = Query(default=None),
     job_repo: JobRepository = Depends(get_job_repo),
     project_repo: ProjectRepository = Depends(get_project_repo),
     settings_repo: SettingsRepository = Depends(get_settings_repo),
@@ -122,6 +124,10 @@ async def trigger_job(
 
     project_dir = Path(project.project_dir) if project.project_dir else Path(f"projects/{project_id}")
     project_language = project.language or "en"
+    target_language = language or project_language
+    is_variant = target_language != project_language
+    default_voices = await settings_repo.get_by_key("tts.default_voices") or {}
+    selected_voice_id = (project.language_voices or {}).get(target_language) or default_voices.get(target_language)
     flux_settings = await settings_repo.get_flux_settings()
     piper_settings = await settings_repo.get_piper_settings()
     video_settings = await settings_repo.get_video_settings()
@@ -166,27 +172,40 @@ async def trigger_job(
             return svc.execute()
         elif jtype == JobType.VOICE:
             async def _voice_job():
+                scenes_path_override = (project_dir / "input" / target_language / "scenes.json") if is_variant else None
+                output_dir_override = (project_dir / "audio" / target_language) if is_variant else None
                 tts_engine = await settings_repo.get_by_key("tts.engine") or "piper"
                 if tts_engine == "google":
                     from app.services.google_tts_service import GoogleTTSService
                     gtts = await settings_repo.get_google_tts_settings()
                     if not gtts.api_key:
                         raise RuntimeError("Google TTS API key not configured — open Settings → Voice.")
+                    if selected_voice_id:
+                        voice_name = selected_voice_id
+                        language_code = "-".join(selected_voice_id.split("-")[:2])
+                    else:
+                        # Global Settings voice/language override only applies to
+                        # the primary language — variants use their own default.
+                        voice_name = "" if is_variant else gtts.voice_name
+                        language_code = "" if is_variant else gtts.language_code
                     svc = GoogleTTSService(
                         project_id=project_id,
                         project_dir=project_dir,
                         api_key=gtts.api_key,
-                        voice_name=gtts.voice_name,
-                        language_code=gtts.language_code,
+                        voice_name=voice_name,
+                        language_code=language_code,
                         speaking_rate=gtts.speaking_rate,
-                        project_language=project_language,
+                        project_language=target_language,
                         progress_callback=progress_cb,
+                        scenes_path_override=scenes_path_override,
+                        output_dir_override=output_dir_override,
                     )
                 else:
                     from app.services.piper_model_manager import ensure_model
                     from app.services.voice_service import VoiceGenerationService
                     resolved = await ensure_model(
-                        project_language, piper_settings.model_path, progress_cb
+                        target_language, piper_settings.model_path, progress_cb,
+                        voice_id=selected_voice_id,
                     )
                     svc = VoiceGenerationService(
                         project_id=project_id,
@@ -195,6 +214,8 @@ async def trigger_job(
                         model_path=resolved or piper_settings.model_path,
                         speed=piper_settings.speed,
                         progress_callback=progress_cb,
+                        scenes_path_override=scenes_path_override,
+                        output_dir_override=output_dir_override,
                     )
                 return await svc.execute()
             return _voice_job()
@@ -204,9 +225,11 @@ async def trigger_job(
                 project_id=project_id,
                 project_dir=project_dir,
                 whisper_model=str(whisper_model),
-                language=project_language,
+                language=target_language,
                 device=str(whisper_device),
                 progress_callback=progress_cb,
+                audio_dir_override=(project_dir / "audio" / target_language) if is_variant else None,
+                output_dir_override=(project_dir / "subtitles" / target_language) if is_variant else None,
             )
             return svc.execute()
         elif jtype == JobType.THUMBNAIL:
@@ -218,6 +241,12 @@ async def trigger_job(
                 flux_settings=flux_settings.model_dump(),
                 progress_callback=progress_cb,
             )
+            if is_variant:
+                async def _thumb_variant_job():
+                    seo_path = project_dir / "input" / target_language / "seo.json"
+                    seo_data = json.loads(seo_path.read_text(encoding="utf-8")) if seo_path.exists() else {}
+                    return await svc.generate_language_variant(target_language, seo_data)
+                return _thumb_variant_job()
             return svc.execute()
         elif jtype == JobType.VIDEO:
             from app.services.video_service import VideoGenerationService
@@ -247,8 +276,11 @@ async def trigger_job(
                 logo_margin=video_settings.logo_margin,
                 burn_subtitles=video_settings.burn_subtitles,
                 project_type=getattr(project, "project_type", "deep_dive") or "deep_dive",
-                language=project_language,
+                language=target_language,
                 channel_name=channel_name,
+                audio_dir_override=str(project_dir / "audio" / target_language) if is_variant else None,
+                subtitles_dir_override=str(project_dir / "subtitles" / target_language) if is_variant else None,
+                output_subdir=f"output/{target_language}" if is_variant else "output",
             )
             return svc.execute()
         elif jtype == JobType.METADATA:
@@ -257,6 +289,8 @@ async def trigger_job(
                 project_id=project_id,
                 project_dir=project_dir,
                 progress_callback=progress_cb,
+                seo_path_override=(project_dir / "input" / target_language / "seo.json") if is_variant else None,
+                output_dir_override=(project_dir / "output" / target_language) if is_variant else None,
             )
             return svc.execute()
         else:
@@ -264,18 +298,22 @@ async def trigger_job(
 
     async def on_complete(result: dict):
         from app.database import get_session_factory
+        progress_data = {
+            "status": "completed",
+            "progress": 100,
+            "completed": result.get("generated") or result.get("completed") or 0,
+            "total": result.get("total") or 0,
+        }
         async with get_session_factory()() as _session:
             await JobRepository(_session).update_status(db_job.id, JobStatus.COMPLETED)
-            await ProjectRepository(_session).update_progress(
-                project_id,
-                _to_store_key(job_type),
-                {
-                    "status": "completed",
-                    "progress": 100,
-                    "completed": result.get("generated") or result.get("completed") or 0,
-                    "total": result.get("total") or 0,
-                },
-            )
+            if is_variant:
+                await ProjectRepository(_session).update_language_progress(
+                    project_id, target_language, _to_store_key(job_type), progress_data,
+                )
+            else:
+                await ProjectRepository(_session).update_progress(
+                    project_id, _to_store_key(job_type), progress_data,
+                )
             await _session.commit()
         await connection_manager.broadcast_to_project(
             project_id,

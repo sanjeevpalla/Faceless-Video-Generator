@@ -23,6 +23,8 @@ import {
   IconButton,
   ToggleButton,
   ToggleButtonGroup,
+  Checkbox,
+  ListItemText,
 } from "@mui/material";
 import {
   ExpandMore as ExpandIcon,
@@ -53,6 +55,7 @@ import { BASE_URL } from "../api/client";
 import { useAppStore } from "../store/appStore";
 import { servicesApi } from "../api/services";
 import { imagesApi } from "../api/images";
+import LanguageVoicePicker from "../components/project/LanguageVoicePicker";
 
 const SAMPLERS = ["euler", "euler_ancestral", "heun", "dpm_2", "dpm_2_ancestral", "lms", "dpm_fast", "dpm_adaptive"];
 const GOOGLE_TTS_VOICES = [
@@ -66,8 +69,28 @@ const GOOGLE_TTS_VOICES = [
   { value: "ml-IN-Wavenet-A", label: "ml-IN-Wavenet-A (Malayalam, Female)" },
   { value: "ta-IN-Wavenet-A", label: "ta-IN-Wavenet-A (Tamil, Female)" },
   { value: "kn-IN-Wavenet-A", label: "kn-IN-Wavenet-A (Kannada, Female)" },
+  { value: "pa-IN-Wavenet-A", label: "pa-IN-Wavenet-A (Punjabi, Female)" },
+  { value: "pa-IN-Wavenet-B", label: "pa-IN-Wavenet-B (Punjabi, Male)" },
 ];
 const SCHEDULERS = ["normal", "karras", "exponential", "sgm_uniform", "simple"];
+const DEFAULT_VOICE_LANGUAGES = [
+  { code: "en", label: "English" },
+  { code: "te", label: "Telugu" },
+  { code: "hi", label: "Hindi" },
+  { code: "ta", label: "Tamil" },
+  { code: "kn", label: "Kannada" },
+  { code: "ml", label: "Malayalam" },
+  { code: "bn", label: "Bengali" },
+  { code: "mr", label: "Marathi" },
+  { code: "gu", label: "Gujarati" },
+  { code: "pa", label: "Punjabi" },
+  { code: "fr", label: "French" },
+  { code: "de", label: "German" },
+  { code: "es", label: "Spanish" },
+  { code: "ja", label: "Japanese" },
+  { code: "ko", label: "Korean" },
+  { code: "zh-CN", label: "Chinese (Simplified)" },
+];
 const WHISPER_MODELS = ["tiny", "base", "small", "medium", "large", "large-v2", "large-v3"];
 const RESOLUTIONS = ["1920x1080", "1280x720", "3840x2160", "1080x1920"];
 const VIDEO_TEMPLATES = ["documentary", "news", "technology", "finance", "educational", "history"];
@@ -249,6 +272,20 @@ export default function SettingsPage() {
     setLocalSettings({ ...localSettings, google_tts: { ...localSettings.google_tts, [key]: value } });
   };
 
+  const updateDefaultVoice = (lang: string, voiceId: string) => {
+    if (!localSettings) return;
+    const next: Record<string, string> = { ...localSettings.default_voices, [lang]: voiceId };
+    if (!voiceId) delete next[lang];
+    setLocalSettings({ ...localSettings, default_voices: next });
+  };
+
+  const updateGoogleTTSLanguageApiKey = (lang: string, apiKey: string) => {
+    if (!localSettings) return;
+    const next: Record<string, string> = { ...localSettings.google_tts?.language_api_keys, [lang]: apiKey };
+    if (!apiKey) delete next[lang];
+    setLocalSettings({ ...localSettings, google_tts: { ...localSettings.google_tts, language_api_keys: next } });
+  };
+
   const updateVideo = (key: string, value: unknown) => {
     if (!localSettings) return;
     setLocalSettings({ ...localSettings, video: { ...localSettings.video, [key]: value } });
@@ -291,6 +328,7 @@ export default function SettingsPage() {
       piper: localSettings.piper,
       google_tts: localSettings.google_tts,
       tts_engine: localSettings.tts_engine,
+      default_voices: localSettings.default_voices,
       video: localSettings.video,
       output: localSettings.output,
       gemini: localSettings.gemini,
@@ -594,11 +632,74 @@ export default function SettingsPage() {
                 />
               </Box>
             </Grid>
+            <Grid item xs={12}>
+              <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5 }}>
+                API Key per Language (optional)
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+                Leave a language blank to use the primary key above. A multi-language Deep Dive
+                video can issue 900-1,000+ TTS calls (one per scene, per language), which can
+                approach per-project quota limits (e.g. 200 RPM for Chirp3-HD voices). Each key
+                you set here should come from a SEPARATE Google Cloud project — TTS quotas are
+                per-project, not per-key. Languages pinned to distinct keys synthesize
+                concurrently; languages sharing a key (including unset ones, which all share the
+                primary key) queue behind each other.
+              </Typography>
+              <Grid container spacing={2}>
+                {DEFAULT_VOICE_LANGUAGES.map(({ code, label }) => (
+                  <Grid item xs={12} sm={6} md={4} key={code}>
+                    <TextField
+                      fullWidth
+                      size="small"
+                      label={`${label} API Key`}
+                      type={showGoogleApiKey ? "text" : "password"}
+                      value={localSettings.google_tts?.language_api_keys?.[code] ?? ""}
+                      onChange={(e) => updateGoogleTTSLanguageApiKey(code, e.target.value)}
+                      placeholder="Uses primary key"
+                    />
+                  </Grid>
+                ))}
+              </Grid>
+            </Grid>
           </Grid>
           <Alert severity="info" sx={{ mt: 2 }}>
             Free tier: 1M chars/month (WaveNet/Neural2) or 4M chars/month (Standard voices).
             Get your API key from Google Cloud Console → Text-to-Speech API.
           </Alert>
+        </AccordionDetails>
+      </Accordion>
+
+      {/* Default Voice per Language */}
+      <Accordion>
+        <AccordionSummary expandIcon={<ExpandIcon />}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+            <PiperIcon sx={{ color: "primary.main" }} />
+            <Typography fontWeight={700}>Default Voice per Language</Typography>
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Applies to every new project unless overridden per-project. Uses whichever
+            engine is active above ({localSettings.tts_engine === "google" ? "Google Cloud TTS" : "Piper"}).
+          </Typography>
+          <Grid container spacing={2}>
+            {DEFAULT_VOICE_LANGUAGES.map(({ code, label }) => (
+              <Grid item xs={12} sm={6} md={4} key={code}>
+                <LanguageVoicePicker
+                  language={code}
+                  languageLabel={label}
+                  engine={localSettings.tts_engine === "google" ? "google" : "piper"}
+                  value={localSettings.default_voices?.[code] || ""}
+                  onChange={(voiceId) => updateDefaultVoice(code, voiceId)}
+                  emptyReason={
+                    localSettings.tts_engine === "google" && !localSettings.google_tts.api_key
+                      ? "add a Google Cloud TTS API key above to see available voices"
+                      : undefined
+                  }
+                />
+              </Grid>
+            ))}
+          </Grid>
         </AccordionDetails>
       </Accordion>
 
@@ -1548,14 +1649,46 @@ export default function SettingsPage() {
                 helperText="e.g. '0 7 * * *' = daily at 7am"
               />
             </Grid>
-            <Grid item xs={12} sm={6}>
-              <TextField
-                fullWidth
-                label="Default Project Language"
-                value={localSettings.automation.default_language}
-                onChange={(e) => updateAutomation("default_language", e.target.value)}
-                placeholder="en"
-              />
+            <Grid item xs={12}>
+              <FormControl fullWidth>
+                <InputLabel>Video Languages</InputLabel>
+                <Select
+                  multiple
+                  value={localSettings.automation.languages?.length ? localSettings.automation.languages : ["en"]}
+                  label="Video Languages"
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    const selected = typeof value === "string" ? value.split(",") : value;
+                    const languages = selected.length ? selected : ["en"];
+                    setLocalSettings({
+                      ...localSettings,
+                      automation: {
+                        ...localSettings.automation,
+                        languages,
+                        default_language: languages[0],
+                      },
+                    });
+                  }}
+                  renderValue={(selected) =>
+                    (selected as string[]).map((code) => DEFAULT_VOICE_LANGUAGES.find((l) => l.code === code)?.label || code).join(", ")
+                  }
+                >
+                  {DEFAULT_VOICE_LANGUAGES.map(({ code, label }) => (
+                    <MenuItem key={code} value={code}>
+                      <Checkbox checked={(localSettings.automation.languages || ["en"]).includes(code)} size="small" />
+                      <ListItemText primary={label} />
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              {(localSettings.automation.languages?.length ?? 0) > 1 && (
+                <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: "block" }}>
+                  "{DEFAULT_VOICE_LANGUAGES.find((l) => l.code === localSettings.automation.languages[0])?.label}" is the
+                  primary language. Every scheduled project (Deep Dive and AI News) is created with all
+                  selected languages, each getting its own script, audio, subtitles, thumbnail, and
+                  YouTube metadata.
+                </Typography>
+              )}
             </Grid>
           </Grid>
           <Alert severity="info" sx={{ mt: 2 }}>

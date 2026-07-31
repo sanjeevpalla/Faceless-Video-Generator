@@ -14,6 +14,8 @@ import {
   List,
   ListItem,
   ListItemText,
+  Tabs,
+  Tab,
 } from "@mui/material";
 import {
   Image as ImageIcon,
@@ -30,8 +32,9 @@ import {
   AutoAwesomeMotion as ContentIcon,
 } from "@mui/icons-material";
 import { useNavigate } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { useProjectStore } from "../store";
-import { useProject } from "../hooks/useProjects";
+import { useProject, useVoicePreview, useUpdateProject } from "../hooks/useProjects";
 import { projectsApi } from "../api/projects";
 import { jobsApi } from "../api/jobs";
 import { imagesApi } from "../api/images";
@@ -40,9 +43,11 @@ import { wan2Api } from "../api/wan2";
 import { subtitlesApi } from "../api/subtitles";
 import { thumbnailApi } from "../api/thumbnail";
 import { videoApi } from "../api/video";
+import { settingsApi } from "../api/settings";
 import ProgressCard from "../components/common/ProgressCard";
 import StatusBadge from "../components/common/StatusBadge";
 import ProjectRenameDialog from "../components/project/ProjectRenameDialog";
+import LanguageVoicePicker from "../components/project/LanguageVoicePicker";
 import LiveLogPanel from "../components/common/LiveLogPanel";
 import QueueStatusPanel from "../components/common/QueueStatusPanel";
 import { useProjectLogs } from "../hooks/useLogs";
@@ -69,12 +74,31 @@ const AI_NEWS_STEPS = [
   { key: "metadata",  label: "Metadata",             icon: <MetadataIcon />,  path: "/video" },
 ];
 
+const LANGUAGE_VARIANT_STAGES = [
+  { key: "script",    label: "Script",     icon: <ContentIcon /> },
+  { key: "voice",     label: "Voice",      icon: <VoiceIcon /> },
+  { key: "subtitles", label: "Subtitles",  icon: <SubtitleIcon /> },
+  { key: "thumbnail", label: "Thumbnail",  icon: <ThumbnailIcon /> },
+  { key: "metadata",  label: "Metadata",   icon: <MetadataIcon /> },
+];
+
+const LANG_LABELS: Record<string, string> = {
+  en: "English", te: "Telugu", hi: "Hindi", ta: "Tamil", kn: "Kannada",
+  ml: "Malayalam", bn: "Bengali", mr: "Marathi", gu: "Gujarati", pa: "Punjabi",
+  fr: "French", de: "German", es: "Spanish", ja: "Japanese",
+  ko: "Korean", "zh-CN": "Chinese",
+};
+
 export default function ProjectPage() {
   const navigate = useNavigate();
   const currentProject = useProjectStore((s) => s.currentProject);
   const setCurrentProject = useProjectStore((s) => s.setCurrentProject);
   const generationProgress = useProjectStore((s) => s.generationProgress);
   const { data: project, isLoading, refetch } = useProject(currentProject?.id);
+  const { data: voicePreview } = useVoicePreview(currentProject?.id);
+  const updateProject = useUpdateProject();
+  const { data: appSettings } = useQuery({ queryKey: ["settings"], queryFn: settingsApi.get, staleTime: 60_000 });
+  const ttsEngine: "piper" | "google" = appSettings?.tts_engine === "google" ? "google" : "piper";
   const updateProgress = useProjectStore((s) => s.updateProgress);
   const pipelineState = useProjectStore((s) => s.pipelineState);
   const updatePipelineState = useProjectStore((s) => s.updatePipelineState);
@@ -152,6 +176,7 @@ export default function ProjectPage() {
   const [translating, setTranslating] = useState(false);
   const [snackMsg, setSnackMsg] = useState<string>("");
   const [renameOpen, setRenameOpen] = useState(false);
+  const [activeLangTab, setActiveLangTab] = useState(0);
 
   const { data: serverLogs = [] } = useProjectLogs(currentProject?.id);
 
@@ -172,8 +197,20 @@ export default function ProjectPage() {
   }
 
   const displayProject = project || currentProject;
+
+  const handleVoiceChange = (lang: string, voiceId: string) => {
+    const current = displayProject.language_voices || {};
+    const next: Record<string, string> = { ...current, [lang]: voiceId };
+    if (!voiceId) delete next[lang];
+    updateProject.mutate({ id: displayProject.id, data: { language_voices: next } });
+  };
+
   const isAiNews = displayProject.project_type === "ai_news";
   const stepConfigs = isAiNews ? AI_NEWS_STEPS : DEEP_DIVE_STEPS;
+  const hasMultipleLanguages = !!(displayProject.languages && displayProject.languages.length > 1);
+  const projectLanguages = displayProject.languages && displayProject.languages.length > 0
+    ? displayProject.languages
+    : [displayProject.language || "en"];
   const contentLabel = "Content Generation";
   const inputFiles = displayProject.input_files_status || {};
   const contentReadyCount = AI_FILE_KEYS.filter((k) => inputFiles[k]?.status === "ready").length;
@@ -260,7 +297,8 @@ export default function ProjectPage() {
         </Box>
 
         <Box sx={{ display: "flex", gap: 1.5 }}>
-          {displayProject.language && displayProject.language !== "en" && (() => {
+          {displayProject.language && displayProject.language !== "en" &&
+            (!displayProject.languages || displayProject.languages.length <= 1) && (() => {
             const tprog = generationProgress.translate;
             const isDone = tprog?.status === "completed";
             return (
@@ -299,69 +337,166 @@ export default function ProjectPage() {
         </Alert>
       )}
 
-      {/* Generation Steps */}
-      <Typography variant="h6" fontWeight={700} sx={{ mb: 2 }}>Generation Steps</Typography>
-      <Grid container spacing={2} sx={{ mb: 4 }}>
+      {/* Language tabs (multi-language projects only) */}
+      {hasMultipleLanguages && (
+        <Tabs
+          value={activeLangTab}
+          onChange={(_, v) => setActiveLangTab(v)}
+          variant="scrollable"
+          scrollButtons="auto"
+          sx={{ mb: 3, borderBottom: 1, borderColor: "divider" }}
+        >
+          {projectLanguages.map((lang) => (
+            <Tab key={lang} label={LANG_LABELS[lang] || lang.toUpperCase()} />
+          ))}
+        </Tabs>
+      )}
 
-        {/* Step 0: Content Generation */}
-        <Grid item xs={12} sm={6} md={4}>
-          <Box onClick={() => navigate("/content")} sx={{ cursor: "pointer" }}>
-            <ProgressCard
-              title={contentLabel}
-              status={contentReadyCount >= 5 ? "completed" : contentReadyCount > 0 ? "running" : "pending"}
-              progress={Math.round((contentReadyCount / 5) * 100)}
-              completed={contentReadyCount}
-              total={5}
-              icon={<ContentIcon />}
-            />
+      {/* Primary-language tab: full Generation Steps grid (unchanged) */}
+      {(!hasMultipleLanguages || activeLangTab === 0) && (
+        <>
+          <Typography variant="h6" fontWeight={700} sx={{ mb: 2 }}>Generation Steps</Typography>
+          <Grid container spacing={2} sx={{ mb: 4 }}>
+
+            {/* Step 0: Content Generation */}
+            <Grid item xs={12} sm={6} md={4}>
+              <Box onClick={() => navigate("/content")} sx={{ cursor: "pointer" }}>
+                <ProgressCard
+                  title={contentLabel}
+                  status={contentReadyCount >= 5 ? "completed" : contentReadyCount > 0 ? "running" : "pending"}
+                  progress={Math.round((contentReadyCount / 5) * 100)}
+                  completed={contentReadyCount}
+                  total={5}
+                  icon={<ContentIcon />}
+                />
+              </Box>
+            </Grid>
+
+            {/* Translation (legacy fallback — only for old-style single-language projects;
+                multi-language projects get localization from the language_variants pipeline step) */}
+            {displayProject.language && displayProject.language !== "en" &&
+              (!displayProject.languages || displayProject.languages.length <= 1) && (() => {
+              const tprog = generationProgress.translate || { status: "pending" as const, progress: 0, total: 0, completed: 0 };
+              return (
+                <Grid item xs={12} sm={6} md={4} key="translate">
+                  <Box onClick={handleTranslate} sx={{ cursor: "pointer" }}>
+                    <ProgressCard
+                      title="Translation"
+                      status={tprog.status}
+                      progress={tprog.progress}
+                      completed={tprog.completed}
+                      total={tprog.total}
+                      icon={<TranslateIcon />}
+                      error={tprog.error}
+                    />
+                  </Box>
+                </Grid>
+              );
+            })()}
+
+            {/* Generation steps */}
+            {stepConfigs.map((step) => {
+              const prog = generationProgress[step.key as keyof typeof generationProgress] || {
+                status: "pending" as const,
+                progress: 0,
+                total: 0,
+                completed: 0,
+              };
+              return (
+                <Grid item xs={12} sm={6} md={4} key={step.key}>
+                  <Box onClick={() => navigate(step.path)} sx={{ cursor: "pointer" }}>
+                    <ProgressCard
+                      title={step.label}
+                      status={prog.status}
+                      progress={prog.progress}
+                      completed={prog.completed}
+                      total={prog.total}
+                      icon={step.icon}
+                      error={prog.error}
+                    />
+                  </Box>
+                </Grid>
+              );
+            })}
+          </Grid>
+
+          {hasMultipleLanguages && voicePreview?.[projectLanguages[0]] && (
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1 }}>
+              Voice: {voicePreview[projectLanguages[0]].voice}
+              {" "}({voicePreview[projectLanguages[0]].engine === "google" ? "Google TTS" : "Piper"})
+            </Typography>
+          )}
+          {hasMultipleLanguages && (
+            <Box sx={{ maxWidth: 360, mb: 4 }}>
+              <LanguageVoicePicker
+                language={projectLanguages[0]}
+                languageLabel={LANG_LABELS[projectLanguages[0]] || projectLanguages[0]}
+                engine={ttsEngine}
+                value={displayProject.language_voices?.[projectLanguages[0]] || ""}
+                onChange={(voiceId) => handleVoiceChange(projectLanguages[0], voiceId)}
+                emptyReason={
+                  ttsEngine === "google" && !appSettings?.google_tts?.api_key
+                    ? "add a Google Cloud TTS API key in Settings to see available voices"
+                    : undefined
+                }
+              />
+            </Box>
+          )}
+        </>
+      )}
+
+      {/* Non-primary language tab: voice picker + per-language progress */}
+      {hasMultipleLanguages && activeLangTab > 0 && (() => {
+        const lang = projectLanguages[activeLangTab];
+        const langProgress = (displayProject.language_progress as Record<string, Record<string, any>> | undefined)?.[lang] || {};
+        const voiceInfo = voicePreview?.[lang];
+        return (
+          <Box sx={{ mb: 4 }}>
+            {voiceInfo && (
+              <Typography variant="caption" color="text.disabled" sx={{ display: "block", mb: 1 }}>
+                Voice: {voiceInfo.voice} ({voiceInfo.engine === "google" ? "Google TTS" : "Piper"})
+              </Typography>
+            )}
+            <Box sx={{ maxWidth: 360, mb: 2 }}>
+              <LanguageVoicePicker
+                language={lang}
+                languageLabel={LANG_LABELS[lang] || lang}
+                engine={ttsEngine}
+                value={displayProject.language_voices?.[lang] || ""}
+                onChange={(voiceId) => handleVoiceChange(lang, voiceId)}
+                emptyReason={
+                  ttsEngine === "google" && !appSettings?.google_tts?.api_key
+                    ? "add a Google Cloud TTS API key in Settings to see available voices"
+                    : undefined
+                }
+              />
+            </Box>
+            <Grid container spacing={2}>
+              {LANGUAGE_VARIANT_STAGES.map((stage) => {
+                const prog = langProgress[stage.key] || {
+                  status: "pending" as const,
+                  progress: 0,
+                  total: 0,
+                  completed: 0,
+                };
+                return (
+                  <Grid item xs={12} sm={6} md={4} key={stage.key}>
+                    <ProgressCard
+                      title={stage.label}
+                      status={prog.status}
+                      progress={prog.progress}
+                      completed={prog.completed}
+                      total={prog.total}
+                      icon={stage.icon}
+                      error={prog.error}
+                    />
+                  </Grid>
+                );
+              })}
+            </Grid>
           </Box>
-        </Grid>
-
-        {/* Translation (non-English projects) */}
-        {displayProject.language && displayProject.language !== "en" && (() => {
-          const tprog = generationProgress.translate || { status: "pending" as const, progress: 0, total: 0, completed: 0 };
-          return (
-            <Grid item xs={12} sm={6} md={4} key="translate">
-              <Box onClick={handleTranslate} sx={{ cursor: "pointer" }}>
-                <ProgressCard
-                  title="Translation"
-                  status={tprog.status}
-                  progress={tprog.progress}
-                  completed={tprog.completed}
-                  total={tprog.total}
-                  icon={<TranslateIcon />}
-                  error={tprog.error}
-                />
-              </Box>
-            </Grid>
-          );
-        })()}
-
-        {/* Generation steps */}
-        {stepConfigs.map((step) => {
-          const prog = generationProgress[step.key as keyof typeof generationProgress] || {
-            status: "pending" as const,
-            progress: 0,
-            total: 0,
-            completed: 0,
-          };
-          return (
-            <Grid item xs={12} sm={6} md={4} key={step.key}>
-              <Box onClick={() => navigate(step.path)} sx={{ cursor: "pointer" }}>
-                <ProgressCard
-                  title={step.label}
-                  status={prog.status}
-                  progress={prog.progress}
-                  completed={prog.completed}
-                  total={prog.total}
-                  icon={step.icon}
-                  error={prog.error}
-                />
-              </Box>
-            </Grid>
-          );
-        })}
-      </Grid>
+        );
+      })()}
 
       {/* Logs */}
       <Grid container spacing={3}>

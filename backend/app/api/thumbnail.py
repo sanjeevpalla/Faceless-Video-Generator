@@ -3,8 +3,9 @@ Thumbnail API — status, file serving, regeneration trigger.
 """
 import json
 from pathlib import Path
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 
 from app.config import get_settings
@@ -25,12 +26,35 @@ def _project_dir(project) -> Path:
     return Path(project.project_dir) if project.project_dir else (settings.PROJECTS_DIR / project.id)
 
 
+def _is_primary(project, language: Optional[str]) -> bool:
+    return (language or project.language or "en") == (project.language or "en")
+
+
+def _thumb_dir_for(project_dir: Path, project, language: Optional[str]) -> Path:
+    if _is_primary(project, language):
+        return project_dir / "thumbnail"
+    return project_dir / "output" / language / "thumbnail"
+
+
+def _prompt_path_for(project_dir: Path, project, language: Optional[str]) -> Path:
+    if _is_primary(project, language):
+        return project_dir / "input" / "thumbnail_prompt.txt"
+    return project_dir / "input" / language / "thumbnail_prompt.txt"
+
+
+def _seo_path_for(project_dir: Path, project, language: Optional[str]) -> Path:
+    if _is_primary(project, language):
+        return project_dir / "input" / "seo.json"
+    return project_dir / "input" / language / "seo.json"
+
+
 # ---------------------------------------------------------------------------
 # GET /thumbnail/project/{project_id}
 # ---------------------------------------------------------------------------
 @router.get("/project/{project_id}")
 async def get_thumbnail_status(
     project_id: str,
+    language: Optional[str] = Query(None),
     project_repo: ProjectRepository = Depends(get_project_repo),
 ):
     project = await project_repo.get_by_id(project_id)
@@ -38,15 +62,15 @@ async def get_thumbnail_status(
         raise ProjectNotFoundError(project_id)
 
     pdir = _project_dir(project)
-    thumb_path = pdir / "thumbnail" / "thumbnail.png"
+    thumb_path = _thumb_dir_for(pdir, project, language) / "thumbnail.png"
 
     # Read the prompt used for generation
     prompt = ""
-    prompt_file = pdir / "input" / "thumbnail_prompt.txt"
+    prompt_file = _prompt_path_for(pdir, project, language)
     if prompt_file.exists():
         prompt = prompt_file.read_text(encoding="utf-8").strip()
     if not prompt:
-        seo_file = pdir / "input" / "seo.json"
+        seo_file = _seo_path_for(pdir, project, language)
         if seo_file.exists():
             try:
                 seo = json.loads(seo_file.read_text(encoding="utf-8"))
@@ -72,13 +96,14 @@ async def get_thumbnail_status(
 @router.get("/project/{project_id}/file")
 async def get_thumbnail_file(
     project_id: str,
+    language: Optional[str] = Query(None),
     project_repo: ProjectRepository = Depends(get_project_repo),
 ):
     project = await project_repo.get_by_id(project_id)
     if not project:
         raise ProjectNotFoundError(project_id)
 
-    path = _project_dir(project) / "thumbnail" / "thumbnail.png"
+    path = _thumb_dir_for(_project_dir(project), project, language) / "thumbnail.png"
     if not path.exists():
         raise HTTPException(status_code=404, detail="Thumbnail not generated yet")
 
@@ -91,6 +116,7 @@ async def get_thumbnail_file(
 @router.post("/project/{project_id}/regenerate")
 async def regenerate_thumbnail(
     project_id: str,
+    language: Optional[str] = Query(None),
     job_repo: JobRepository = Depends(get_job_repo),
     project_repo: ProjectRepository = Depends(get_project_repo),
     settings_repo: SettingsRepository = Depends(get_settings_repo),
@@ -101,6 +127,7 @@ async def regenerate_thumbnail(
 
     pdir = _project_dir(project)
     flux_settings = await settings_repo.get_flux_settings()
+    is_primary = _is_primary(project, language)
 
     db_job = await job_repo.create(project_id=project_id, job_type=JobType.THUMBNAIL)
 
@@ -113,7 +140,8 @@ async def regenerate_thumbnail(
         await connection_manager.broadcast_to_project(
             project_id,
             "job_progress",
-            {"job_id": db_job.id, "job_type": "thumbnail", "progress": progress, "message": message},
+            {"job_id": db_job.id, "job_type": "thumbnail", "progress": progress, "message": message,
+             **({} if is_primary else {"language": language})},
             job_id=db_job.id,
         )
 
@@ -125,6 +153,9 @@ async def regenerate_thumbnail(
             comfyui_url=flux_settings.comfyui_url,
             flux_settings=flux_settings.model_dump(),
             progress_callback=progress_cb,
+            prompt_path_override=None if is_primary else _prompt_path_for(pdir, project, language),
+            seo_path_override=None if is_primary else _seo_path_for(pdir, project, language),
+            output_dir_override=None if is_primary else _thumb_dir_for(pdir, project, language),
         )
         return svc.generate()
 
@@ -175,6 +206,7 @@ async def regenerate_thumbnail(
 @router.delete("/project/{project_id}")
 async def delete_thumbnail(
     project_id: str,
+    language: Optional[str] = Query(None),
     project_repo: ProjectRepository = Depends(get_project_repo),
 ):
     project = await project_repo.get_by_id(project_id)
@@ -183,8 +215,10 @@ async def delete_thumbnail(
 
     pdir = _project_dir(project)
     deleted = 0
+    is_primary = _is_primary(project, language)
+    folders = [_thumb_dir_for(pdir, project, language)] + ([pdir / "cache" / "thumbnail"] if is_primary else [])
 
-    for folder in [pdir / "thumbnail", pdir / "cache" / "thumbnail"]:
+    for folder in folders:
         if folder.exists():
             for f in folder.iterdir():
                 if f.is_file():

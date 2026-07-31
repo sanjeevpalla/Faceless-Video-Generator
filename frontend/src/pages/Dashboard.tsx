@@ -17,6 +17,9 @@ import {
   InputLabel,
   Select,
   MenuItem,
+  Chip,
+  Checkbox,
+  ListItemText,
 } from "@mui/material";
 import {
   Add as AddIcon,
@@ -39,6 +42,25 @@ import { wan2Api } from "../api/wan2";
 import { subtitlesApi } from "../api/subtitles";
 import { thumbnailApi } from "../api/thumbnail";
 import { videoApi } from "../api/video";
+
+const LANG_LABELS: Record<string, string> = {
+  en: "English",
+  te: "Telugu",
+  hi: "Hindi",
+  ta: "Tamil",
+  kn: "Kannada",
+  ml: "Malayalam",
+  bn: "Bengali",
+  mr: "Marathi",
+  gu: "Gujarati",
+  pa: "Punjabi",
+  fr: "French",
+  de: "German",
+  es: "Spanish",
+  ja: "Japanese",
+  ko: "Korean",
+  "zh-CN": "Chinese (Simplified)",
+};
 
 function StatCard({
   title,
@@ -88,7 +110,7 @@ export default function Dashboard() {
   const [createOpen, setCreateOpen] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectDesc, setNewProjectDesc] = useState("");
-  const [newProjectLang, setNewProjectLang] = useState("en");
+  const [newProjectLangs, setNewProjectLangs] = useState<string[]>(["en"]);
   const [newProjectType, setNewProjectType] = useState<"deep_dive" | "ai_news">("deep_dive");
   const [createNameError, setCreateNameError] = useState("");
 
@@ -191,16 +213,18 @@ export default function Dashboard() {
     if (!newProjectName.trim()) return;
     setCreateNameError("");
     try {
+      const languages = newProjectLangs.length ? newProjectLangs : ["en"];
       await createProject.mutateAsync({
         name: newProjectName.trim(),
         description: newProjectDesc.trim() || undefined,
-        language: newProjectLang,
+        language: languages[0],
+        languages,
         project_type: newProjectType,
       });
       setCreateOpen(false);
       setNewProjectName("");
       setNewProjectDesc("");
-      setNewProjectLang("en");
+      setNewProjectLangs(["en"]);
       setNewProjectType("deep_dive");
       setCreateNameError("");
       navigate("/project");
@@ -435,30 +459,36 @@ export default function Dashboard() {
             sx={{ mb: 2 }}
           />
           <FormControl fullWidth>
-            <InputLabel>Video Language</InputLabel>
+            <InputLabel>Video Languages</InputLabel>
             <Select
-              value={newProjectLang}
-              label="Video Language"
-              onChange={(e) => setNewProjectLang(e.target.value)}
+              multiple
+              value={newProjectLangs}
+              label="Video Languages"
+              onChange={(e) => {
+                const value = e.target.value;
+                const selected = typeof value === "string" ? value.split(",") : value;
+                setNewProjectLangs(selected.length ? selected : ["en"]);
+              }}
+              renderValue={(selected) =>
+                (selected as string[]).map((code) => LANG_LABELS[code] || code).join(", ")
+              }
             >
-              <MenuItem value="en">English (no translation)</MenuItem>
-              <MenuItem value="te">Telugu</MenuItem>
-              <MenuItem value="hi">Hindi</MenuItem>
-              <MenuItem value="ta">Tamil</MenuItem>
-              <MenuItem value="kn">Kannada</MenuItem>
-              <MenuItem value="ml">Malayalam</MenuItem>
-              <MenuItem value="bn">Bengali</MenuItem>
-              <MenuItem value="mr">Marathi</MenuItem>
-              <MenuItem value="gu">Gujarati</MenuItem>
-              <MenuItem value="fr">French</MenuItem>
-              <MenuItem value="de">German</MenuItem>
-              <MenuItem value="es">Spanish</MenuItem>
-              <MenuItem value="ja">Japanese</MenuItem>
-              <MenuItem value="ko">Korean</MenuItem>
-              <MenuItem value="zh-CN">Chinese (Simplified)</MenuItem>
+              {Object.entries(LANG_LABELS).map(([code, label]) => (
+                <MenuItem key={code} value={code}>
+                  <Checkbox checked={newProjectLangs.includes(code)} size="small" />
+                  <ListItemText primary={label} />
+                </MenuItem>
+              ))}
             </Select>
           </FormControl>
-          {newProjectLang !== "en" && (
+          {newProjectLangs.length > 1 && (
+            <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: "block" }}>
+              "{LANG_LABELS[newProjectLangs[0]]}" is the primary language. Every other selected
+              language gets its own script, audio, subtitles, thumbnail, and YouTube metadata,
+              reusing the same generated images.
+            </Typography>
+          )}
+          {newProjectLangs.length === 1 && newProjectLangs[0] !== "en" && (
             <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: "block" }}>
               Script, scenes, and SEO files will be auto-translated before voice generation. Image prompts stay in English.
             </Typography>

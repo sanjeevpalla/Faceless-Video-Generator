@@ -293,12 +293,17 @@ class VideoGenerationService(BaseService):
         burn_subtitles: bool = True,
         language: str = "en",
         channel_name: str = "Deep Dive AI",
+        audio_dir_override: Optional[str] = None,
+        subtitles_dir_override: Optional[str] = None,
+        output_subdir: str = "output",
     ) -> None:
         super().__init__(project_id, project_dir, progress_callback, settings)
         self.burn_subtitles = burn_subtitles
         self.project_type = project_type
         self.language = language
         self.channel_name = channel_name
+        self.audio_dir_override = Path(audio_dir_override) if audio_dir_override else None
+        self.subtitles_dir_override = Path(subtitles_dir_override) if subtitles_dir_override else None
         # AI News projects default to the "ai_news" template when the caller
         # hasn't explicitly picked a different one (i.e. still on "documentary").
         if project_type == "ai_news" and template == "documentary":
@@ -315,7 +320,7 @@ class VideoGenerationService(BaseService):
         self.audio_codec = audio_codec
         self.video_bitrate = video_bitrate
         self.audio_bitrate = audio_bitrate
-        self.output_dir = self.get_output_dir("output")
+        self.output_dir = self.get_output_dir(output_subdir)
         self._nvenc_available: Optional[bool] = None
         self.narrator_enabled = narrator_enabled
         self.narrator_clips_dir = narrator_clips_dir
@@ -340,8 +345,8 @@ class VideoGenerationService(BaseService):
 
         images_dir = self.project_dir / "images"
         clips_dir  = self.project_dir / "clips"
-        audio_dir  = self.project_dir / "audio"
-        subs_dir   = self.project_dir / "subtitles"
+        audio_dir  = self.audio_dir_override or (self.project_dir / "audio")
+        subs_dir   = self.subtitles_dir_override or (self.project_dir / "subtitles")
         input_dir  = self.project_dir / "input"
 
         if self.project_type == "ai_news":
@@ -385,11 +390,8 @@ class VideoGenerationService(BaseService):
         if self.project_type == "ai_news":
             raw_video, _ai_news_no_nar = await loop.run_in_executor(
                 None, self._build_ai_news_video, image_files, clips_dir, scene_durations, codec,
-                audio_dir if use_per_scene_audio else None,
+                audio_dir, subs_dir,
             )
-            # Auto-generate 9:16 shorts for all sections that have narration
-            await self.report_progress(75, "Generating section shorts…")
-            await self._auto_generate_ai_news_shorts()
         else:
             raw_video = await loop.run_in_executor(
                 None, self._build_hybrid_video, image_files, clips_dir, scene_durations, codec,
@@ -493,28 +495,6 @@ class VideoGenerationService(BaseService):
 
         await self.report_progress(100, "Video render complete")
         return manifest
-
-    # ------------------------------------------------------------------
-    # AI News short auto-generation
-    # ------------------------------------------------------------------
-    async def _auto_generate_ai_news_shorts(self) -> None:
-        """Generate 9:16 shorts for every AI News section that has narration.wav."""
-        from app.services.shorts_service import AiNewsShortsService
-        svc = AiNewsShortsService(project_id=self.project_id, project_dir=self.project_dir)
-        audio_sections = self.project_dir / "audio" / "sections"
-        if not audio_sections.exists():
-            return
-        labels = sorted(d.name for d in audio_sections.iterdir()
-                        if d.is_dir() and (d / "narration.wav").exists())
-        for i, label in enumerate(labels, 1):
-            try:
-                await self.report_progress(
-                    75 + (i / max(len(labels), 1)) * 4,
-                    f"Generating short {i}/{len(labels)}: {label}…",
-                )
-                await svc.generate_section_short(label)
-            except Exception as exc:
-                self.logger.warning("Auto-short failed for '%s': %s", label, exc)
 
     # ------------------------------------------------------------------
     # Codec selection
@@ -1184,6 +1164,7 @@ class VideoGenerationService(BaseService):
         scene_durations: List[float],
         codec: str,
         audio_dir: Optional[Path] = None,
+        subtitles_dir: Optional[Path] = None,
     ) -> Path:
         """Build the AI News final video as ordered, independent section mini-videos.
 
@@ -1198,6 +1179,9 @@ class VideoGenerationService(BaseService):
         """
         import shutil as _shutil
 
+        audio_dir     = audio_dir or (self.project_dir / "audio")
+        subtitles_dir = subtitles_dir or (self.project_dir / "subtitles")
+
         out          = self.output_dir / "_raw_video.mp4"
         segs_dir     = self.output_dir / "_segments";       segs_dir.mkdir(exist_ok=True)
         sections_dir = self.output_dir / "_sections";       sections_dir.mkdir(exist_ok=True)
@@ -1207,10 +1191,10 @@ class VideoGenerationService(BaseService):
         scenes_meta   = self._load_scenes_json()
         animations    = self.template_cfg.get("animations", ["none"])
         has_anim      = any(a != "none" for a in animations)
-        has_sec_audio = (self.project_dir / "audio" / "sections").exists()
+        has_sec_audio = (audio_dir / "sections").exists()
 
         # Load existing SRT for per-section extraction (avoids running Whisper 12×)
-        srt_global = self.project_dir / "subtitles" / "subtitles.srt"
+        srt_global = subtitles_dir / "subtitles.srt"
         srt_entries = self._parse_srt(srt_global) if srt_global.exists() else []
 
         # Pre-generate badge PNGs
@@ -1454,7 +1438,7 @@ class VideoGenerationService(BaseService):
             narr_end    = narr_start   # updated below
 
             # Primary: use pre-assembled section narration.wav (AI news layout)
-            perm_narr = self.project_dir / "audio" / "sections" / label / "narration.wav"
+            perm_narr = audio_dir / "sections" / label / "narration.wav"
             if perm_narr.exists() and indices:
                 try:
                     with _wave.open(str(perm_narr), "rb") as wf2:
@@ -1544,7 +1528,7 @@ class VideoGenerationService(BaseService):
 
             # c. Burn subtitles — prefer per-section SRT (AI news), fallback to global extraction
             if self.burn_subtitles and sec_content != raw_sec:
-                perm_srt = self.project_dir / "subtitles" / "sections" / label / "subtitles.srt"
+                perm_srt = subtitles_dir / "sections" / label / "subtitles.srt"
                 srt_to_burn = None
                 if perm_srt.exists():
                     srt_to_burn = perm_srt
@@ -1593,12 +1577,12 @@ class VideoGenerationService(BaseService):
             tmp_sec = sections_dir / lbl
             narr_w  = tmp_sec / "narration.wav"
             if narr_w.exists():
-                perm_a = self.project_dir / "audio" / "sections" / lbl
+                perm_a = audio_dir / "sections" / lbl
                 perm_a.mkdir(parents=True, exist_ok=True)
                 _shutil.copy2(str(narr_w), str(perm_a / "narration.wav"))
             sec_srt = tmp_sec / "section.srt"
             if sec_srt.exists():
-                perm_s = self.project_dir / "subtitles" / "sections" / lbl
+                perm_s = subtitles_dir / "sections" / lbl
                 perm_s.mkdir(parents=True, exist_ok=True)
                 _shutil.copy2(str(sec_srt), str(perm_s / "subtitles.srt"))
 
@@ -1820,7 +1804,7 @@ class VideoGenerationService(BaseService):
         3. scenes.json entry matched by clip sort-order index (covers uploaded clips
            where scene_id in the filename may not match the JSON)
         """
-        audio_dir = self.project_dir / "audio"
+        audio_dir = self.audio_dir_override or (self.project_dir / "audio")
         wav_path = audio_dir / f"scene_{scene_id:03d}.wav"
         if wav_path.exists():
             try:
@@ -3015,7 +2999,7 @@ class VideoGenerationService(BaseService):
     def _calculate_scene_durations(
         self, num_scenes: int, audio_file: Optional[Path]
     ) -> List[float]:
-        audio_dir = self.project_dir / "audio"
+        audio_dir = self.audio_dir_override or (self.project_dir / "audio")
         images_dir = self.project_dir / "images"
 
         # Build scene_id → actual WAV duration map (no count requirement)

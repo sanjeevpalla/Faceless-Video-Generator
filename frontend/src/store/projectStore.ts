@@ -34,12 +34,15 @@ export interface Project {
   status: string;
   description?: string;
   language?: string;
+  languages?: string[];
+  language_voices?: Record<string, string>;
   project_type?: "deep_dive" | "ai_news";
   created_at: string;
   updated_at: string;
   project_dir?: string;
   input_files_status: Record<string, FileStatusDetail>;
   progress_state: ProgressState;
+  language_progress?: Record<string, Record<string, unknown>>;
   resume_state: Record<string, unknown>;
 }
 
@@ -105,6 +108,9 @@ const defaultContentState = (): ContentGenState => ({
   seo:          { status: "idle", content: "" },
 });
 
+/** Per-language content state, keyed by language code (e.g. "en", "te", "hi"). */
+export type ContentGenStateByLang = Record<string, ContentGenState>;
+
 const defaultStep = (): StepProgress => ({
   status: "pending",
   progress: 0,
@@ -128,7 +134,12 @@ interface ProjectStore {
   projects: Project[];
   selectedSceneId: number | null;
   generationProgress: ProgressState;
+  /** Mirror of contentGenStateByLang[activeContentLanguage] — kept in sync by every
+   * setter below. Read this when you don't care which language is active (e.g. Sidebar
+   * step-status icons); read contentGenStateByLang directly for per-language tabs. */
   contentGenState: ContentGenState;
+  contentGenStateByLang: ContentGenStateByLang;
+  activeContentLanguage: string;
 
   /** Pipeline orchestration state (single-click generation). */
   pipelineState: PipelineRunState;
@@ -145,8 +156,9 @@ interface ProjectStore {
   clearCurrentProject: () => void;
   setLtxSceneIds: (ids: Set<number>) => void;
   toggleLtxSceneId: (id: number) => void;
-  updateContentState: (patch: Partial<ContentGenState>) => void;
+  updateContentState: (patch: Partial<ContentGenState>, language?: string) => void;
   resetContentState: () => void;
+  setActiveContentLanguage: (language: string) => void;
   updatePipelineState: (patch: Partial<PipelineRunState>) => void;
   resetPipelineState: () => void;
 }
@@ -160,19 +172,30 @@ export const useProjectStore = create<ProjectStore>()(
         selectedSceneId: null,
         generationProgress: defaultProgressState(),
         contentGenState: defaultContentState(),
+        contentGenStateByLang: {},
+        activeContentLanguage: "en",
         pipelineState: defaultPipelineState(),
         ltxSceneIds: new Set<number>(),
 
         setCurrentProject: (project) =>
-          set((state) => ({
-            currentProject: project,
-            ltxSceneIds: state.currentProject?.id !== project?.id ? new Set<number>() : state.ltxSceneIds,
-            // Reset content state when switching projects
-            contentGenState: state.currentProject?.id !== project?.id ? defaultContentState() : state.contentGenState,
-            generationProgress: project
-              ? (project.progress_state as ProgressState) ?? defaultProgressState()
-              : defaultProgressState(),
-          })),
+          set((state) => {
+            const projectChanged = state.currentProject?.id !== project?.id;
+            const activeContentLanguage = project?.language || "en";
+            const contentGenStateByLang = projectChanged ? {} : state.contentGenStateByLang;
+            return {
+              currentProject: project,
+              ltxSceneIds: projectChanged ? new Set<number>() : state.ltxSceneIds,
+              // Reset content state when switching projects
+              activeContentLanguage,
+              contentGenStateByLang,
+              contentGenState: projectChanged
+                ? defaultContentState()
+                : contentGenStateByLang[activeContentLanguage] ?? defaultContentState(),
+              generationProgress: project
+                ? (project.progress_state as ProgressState) ?? defaultProgressState()
+                : defaultProgressState(),
+            };
+          }),
 
       setProjects: (projects) => set({ projects }),
 
@@ -207,14 +230,35 @@ export const useProjectStore = create<ProjectStore>()(
           ltxSceneIds: new Set<number>(),
           generationProgress: defaultProgressState(),
           contentGenState: defaultContentState(),
+          contentGenStateByLang: {},
+          activeContentLanguage: "en",
         }),
 
-      updateContentState: (patch) =>
+      updateContentState: (patch, language) =>
+        set((state) => {
+          const lang = language ?? state.activeContentLanguage;
+          const nextForLang = {
+            ...(state.contentGenStateByLang[lang] ?? defaultContentState()),
+            ...patch,
+          };
+          const contentGenStateByLang = { ...state.contentGenStateByLang, [lang]: nextForLang };
+          return {
+            contentGenStateByLang,
+            contentGenState: lang === state.activeContentLanguage ? nextForLang : state.contentGenState,
+          };
+        }),
+
+      resetContentState: () =>
         set((state) => ({
-          contentGenState: { ...state.contentGenState, ...patch },
+          contentGenState: defaultContentState(),
+          contentGenStateByLang: { ...state.contentGenStateByLang, [state.activeContentLanguage]: defaultContentState() },
         })),
 
-      resetContentState: () => set({ contentGenState: defaultContentState() }),
+      setActiveContentLanguage: (language) =>
+        set((state) => ({
+          activeContentLanguage: language,
+          contentGenState: state.contentGenStateByLang[language] ?? defaultContentState(),
+        })),
 
       updatePipelineState: (patch) =>
         set((state) => ({ pipelineState: { ...state.pipelineState, ...patch } })),
@@ -233,7 +277,11 @@ export const useProjectStore = create<ProjectStore>()(
       {
         name: "faceless-content-state",
         storage: createJSONStorage(() => localStorage),
-        partialize: (state) => ({ contentGenState: state.contentGenState }),
+        partialize: (state) => ({
+          contentGenState: state.contentGenState,
+          contentGenStateByLang: state.contentGenStateByLang,
+          activeContentLanguage: state.activeContentLanguage,
+        }),
       }
     ),
     { name: "ProjectStore" }

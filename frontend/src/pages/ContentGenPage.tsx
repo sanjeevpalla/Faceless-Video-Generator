@@ -10,7 +10,7 @@ const openLink = async (href: string) => {
 };
 import {
   Box, Typography, Button, TextField, CircularProgress,
-  Alert, Chip, LinearProgress, IconButton, Tooltip, Divider,
+  Alert, Chip, LinearProgress, IconButton, Tooltip, Divider, Tabs, Tab,
 } from "@mui/material";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -32,13 +32,14 @@ import {
 } from "@mui/icons-material";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useProjectStore, ContentStepState } from "../store/projectStore";
+import { useProjectStore, ContentStepState, ContentGenState } from "../store/projectStore";
 import { useAppStore } from "../store/appStore";
 import { pipelineApi } from "../api/pipeline";
 import { contentApi } from "../api/content";
 import { aiNewsApi } from "../api/aiNews";
 import { useWebSocket } from "../hooks/useWebSocket";
 import AiNewsSectionTabs from "../components/ai-news/AiNewsSectionTabs";
+import { languageLabel } from "../constants/languages";
 
 // ── Step config ────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,12 @@ const STEPS = [
 ] as const;
 
 type StepKey = typeof STEPS[number]["key"];
+
+// Steps that auto-propagate from the primary language tab into every other
+// project.languages entry once the primary run completes — "research" is
+// shared verbatim (it only ever runs once, for the primary language); the
+// rest are translated server-side (ContentGenerationService.translate_*).
+const AUTO_PROPAGATE_STEPS: StepKey[] = ["research", "script", "scenes", "thumbnail", "seo"];
 
 // Label / description overrides applied when project_type === "ai_news"
 const AI_NEWS_OVERRIDES: Partial<Record<StepKey, { label?: string; action?: string; desc?: string }>> = {
@@ -455,12 +462,20 @@ export default function ContentGenPage() {
   const cs = useProjectStore((s) => s.contentGenState);
   const update = useProjectStore((s) => s.updateContentState);
   const updatePipelineState = useProjectStore((s) => s.updatePipelineState);
+  const activeLanguage = useProjectStore((s) => s.activeContentLanguage);
+  const setActiveLanguage = useProjectStore((s) => s.setActiveContentLanguage);
   const singleClickEnabled  = useAppStore((s) => s.singleClickEnabled);
   const addNotification     = useAppStore((s) => s.addNotification);
 
   const pid = currentProject?.id ?? "";
   const isAiNews = currentProject?.project_type === "ai_news";
   const queryClient = useQueryClient();
+
+  const primaryLanguage = currentProject?.language || "en";
+  const languages = currentProject?.languages && currentProject.languages.length > 1
+    ? currentProject.languages
+    : null;
+  const isPrimaryLanguage = activeLanguage === primaryLanguage;
 
   const [sectionLabel, setSectionLabel] = useState<string | null>(null);
 
@@ -479,36 +494,48 @@ export default function ContentGenPage() {
     : baseStep;
   const stepState: ContentStepState = cs[baseStep.key];
 
-  // Shorthand updater per step
-  const setStep = (key: StepKey, patch: Partial<ContentStepState>) =>
-    update({ [key]: { ...cs[key], ...patch } });
+  // Shorthand updater per step. Defaults to the currently active language tab, but
+  // callers driving a specific language's background job (e.g. the WS listener below,
+  // which always tracks the PRIMARY language's full-pipeline job) must pass `language`
+  // explicitly — otherwise progress would land in whichever tab the user happens to be
+  // viewing at the time the event arrives.
+  const setStep = (key: StepKey, patch: Partial<ContentStepState>, language?: string) => {
+    const lang = language ?? activeLanguage;
+    const current = useProjectStore.getState().contentGenStateByLang[lang]?.[key]
+      ?? { status: "idle" as const, content: "" };
+    update({ [key]: { ...current, ...patch } } as Partial<ContentGenState>, lang);
+  };
 
-  // WebSocket listener for "run all" batch progress
+  // WebSocket listener for "run all" batch progress (primary language only —
+  // the background /generate job never touches other languages).
   useWebSocket({
     projectId: currentProject?.id,
     onMessage: useCallback((event: string, data: Record<string, unknown>) => {
       if (data.job_type !== "content") return;
       const step = String(data.step ?? "");
       if (event === "job_progress") {
-        if (step === "script")        setStep("script",       { status: "running" });
-        if (step === "scenes")        setStep("scenes",       { status: "running" });
-        if (step === "image_prompts") setStep("imagePrompts", { status: "running" });
-        if (step === "thumbnail")     setStep("thumbnail",    { status: "running" });
-        if (step === "seo")           setStep("seo",          { status: "running" });
+        if (step === "script")        setStep("script",       { status: "running" }, primaryLanguage);
+        if (step === "scenes")        setStep("scenes",       { status: "running" }, primaryLanguage);
+        if (step === "image_prompts") setStep("imagePrompts", { status: "running" }, primaryLanguage);
+        if (step === "thumbnail")     setStep("thumbnail",    { status: "running" }, primaryLanguage);
+        if (step === "seo")           setStep("seo",          { status: "running" }, primaryLanguage);
       }
     // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []),
   });
 
-  // Restore previously generated content from disk when the project is opened/refreshed
+  // Restore previously generated content from disk whenever the project or the
+  // selected language tab changes.
   useEffect(() => {
     if (!pid) return;
-    contentApi.getState(pid).then((saved) => {
+    contentApi.getState(pid, activeLanguage).then((saved) => {
       // Use getState() to read the store without adding it to deps (avoids re-running on every update)
-      const cur = useProjectStore.getState().contentGenState;
+      const cur = useProjectStore.getState().contentGenStateByLang[activeLanguage] ?? {};
       const patch: Record<string, ContentStepState> = {};
       const apply = (key: StepKey, text: string) => {
-        if (text && cur[key].content === "") patch[key] = { status: "done", content: text };
+        if (text && (!cur[key as keyof typeof cur] || (cur[key as keyof typeof cur] as ContentStepState).content === "")) {
+          patch[key] = { status: "done", content: text };
+        }
       };
       apply("trends",       saved.trends);
       apply("research",     saved.research);
@@ -517,10 +544,10 @@ export default function ContentGenPage() {
       apply("imagePrompts", saved.image_prompts);
       apply("thumbnail",    saved.thumbnail);
       apply("seo",          saved.seo);
-      if (Object.keys(patch).length) update(patch as any);
+      if (Object.keys(patch).length) update(patch as any, activeLanguage);
     }).catch(() => { /* no saved files yet — silently ignore */ });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pid]);
+  }, [pid, activeLanguage]);
 
   if (!currentProject) {
     return (
@@ -531,11 +558,54 @@ export default function ContentGenPage() {
     );
   }
 
+  // ── Auto-translate into other languages ─────────────────────────────────────
+  // Fired (not awaited) after a primary-language step completes, so the primary
+  // tab shows "Done" immediately while every other language tab shows its own
+  // "Running…" → "Done"/"Error" as its translation lands.
+  const propagateToOtherLanguages = async (key: StepKey, primaryText: string) => {
+    if (!languages) return;
+    const extraLanguages = languages.filter((l) => l !== primaryLanguage);
+    if (!extraLanguages.length) return;
+
+    if (key === "research") {
+      // Research runs once, for the primary language only — share the same
+      // text into every other language tab rather than re-fetching it.
+      extraLanguages.forEach((lang) => setStep(key, { status: "done", content: primaryText }, lang));
+      return;
+    }
+
+    const label = STEPS.find((s) => s.key === key)?.label ?? key;
+    addNotification({
+      type: "info",
+      title: "Auto-translating",
+      message: `Translating ${label.toLowerCase()} into ${extraLanguages.length} other language(s)…`,
+    });
+
+    for (const lang of extraLanguages) {
+      setStep(key, { status: "running", content: "", error: undefined }, lang);
+      try {
+        let text = "";
+        // The request body is ignored server-side for non-primary languages —
+        // translation reads the primary language's already-saved file itself.
+        if (key === "script")          text = (await contentApi.generateScript(pid, "", lang)).text;
+        else if (key === "scenes")     text = (await contentApi.generateScenes(pid, "", lang)).text;
+        else if (key === "thumbnail")  text = (await contentApi.generateThumbnail(pid, "", lang)).text;
+        else if (key === "seo")        text = (await contentApi.generateSeo(pid, "", lang)).text;
+        setStep(key, { status: "done", content: text }, lang);
+      } catch (e: any) {
+        const msg = e?.response?.data?.detail ?? e?.message ?? "Translation failed";
+        setStep(key, { status: "error", error: msg }, lang);
+        addNotification({ type: "error", title: `${languageLabel(lang)} translation failed`, message: msg });
+      }
+    }
+  };
+
   // ── Per-step run handlers ────────────────────────────────────────────────────
 
   const run = async (key: StepKey) => {
     // Single Click Generation: intercept Research button and run full pipeline instead
-    if (key === "research" && singleClickEnabled && !isAiNews) {
+    // (primary language only — other language tabs always run their own step directly).
+    if (key === "research" && singleClickEnabled && !isAiNews && isPrimaryLanguage) {
       if (!cs.topic.trim()) { setStep(key, { status: "error", error: "Enter a topic first." }); return; }
       setStep(key, { status: "running", content: "", error: undefined });
       try {
@@ -555,40 +625,50 @@ export default function ContentGenPage() {
     try {
       let text = "";
       if (key === "trends") {
-        const r = await contentApi.discoverTrends(pid);
+        const r = await contentApi.discoverTrends(pid, activeLanguage);
         text = r.text;
       } else if (key === "research") {
         if (!cs.topic.trim()) { setStep(key, { status: "error", error: "Enter a topic first." }); return; }
-        const r = await contentApi.researchTopic(pid, cs.topic.trim());
+        const r = await contentApi.researchTopic(pid, cs.topic.trim(), activeLanguage);
         text = r.text;
       } else if (key === "script") {
         if (isAiNews) {
           if (!cs.trends.content) { setStep(key, { status: "error", error: "Run 'Fetch AI News Topics' first." }); return; }
-          const r = await contentApi.generateScript(pid, cs.trends.content);
+          const r = await contentApi.generateScript(pid, cs.trends.content, activeLanguage);
           text = r.text;
         } else {
           if (!cs.research.content) { setStep(key, { status: "error", error: "Run Research first." }); return; }
-          const r = await contentApi.generateScript(pid, cs.research.content);
+          const r = await contentApi.generateScript(pid, cs.research.content, activeLanguage);
           text = r.text;
         }
       } else if (key === "scenes") {
         if (!cs.script.content) { setStep(key, { status: "error", error: "Run Script first." }); return; }
-        const r = await contentApi.generateScenes(pid, cs.script.content);
+        const r = await contentApi.generateScenes(pid, cs.script.content, activeLanguage);
         text = r.text;
       } else if (key === "imagePrompts") {
-        if (!cs.scenes.content) { setStep(key, { status: "error", error: "Run Scenes first." }); return; }
-        const r = await contentApi.generateImagePrompts(pid, cs.scenes.content);
-        text = r.text;
+        if (!isPrimaryLanguage) {
+          // Shared across languages — no fresh Gemini call, just mirrors the primary language's file.
+          const r = await contentApi.generateImagePrompts(pid, "", activeLanguage);
+          text = r.text;
+        } else {
+          if (!cs.scenes.content) { setStep(key, { status: "error", error: "Run Scenes first." }); return; }
+          const r = await contentApi.generateImagePrompts(pid, cs.scenes.content, activeLanguage);
+          text = r.text;
+        }
       } else if (key === "thumbnail") {
         if (!cs.script.content) { setStep(key, { status: "error", error: "Run Script first." }); return; }
-        const r = await contentApi.generateThumbnail(pid, cs.script.content);
+        const r = await contentApi.generateThumbnail(pid, cs.script.content, activeLanguage);
         text = r.text;
       } else if (key === "seo") {
         if (!cs.script.content) { setStep(key, { status: "error", error: "Run Script first." }); return; }
-        const r = await contentApi.generateSeo(pid, cs.script.content);
+        const r = await contentApi.generateSeo(pid, cs.script.content, activeLanguage);
         text = r.text;
       }
       setStep(key, { status: "done", content: text });
+
+      if (isPrimaryLanguage && AUTO_PROPAGATE_STEPS.includes(key)) {
+        void propagateToOtherLanguages(key, text);
+      }
 
       // AI News: scenes/image-prompts responses just landed on disk — refetch
       // the per-section content so the backend's auto-split (GET .../sections/content)
@@ -635,6 +715,40 @@ export default function ContentGenPage() {
           </Button>
         )}
       </Box>
+
+      {/* Language tabs — every content step is generated/reviewed per language */}
+      {languages && (
+        <Tabs
+          value={activeLanguage}
+          onChange={(_, v) => setActiveLanguage(v)}
+          sx={{ mb: 2, minHeight: 36, "& .MuiTab-root": { minHeight: 36, py: 0.5 } }}
+        >
+          {languages.map((code) => (
+            <Tab key={code} value={code} label={languageLabel(code)} />
+          ))}
+        </Tabs>
+      )}
+
+      {/* Image Prompts is shared across languages — generated once from the primary
+          language's visual descriptions, since it drives the (also shared) images. */}
+      {currentStep.key === "imagePrompts" && !isPrimaryLanguage && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          Shared with {languageLabel(primaryLanguage)} — images are generated once from
+          the primary language's visual descriptions, so every language reuses the same
+          prompts and the same images.
+        </Alert>
+      )}
+
+      {/* Auto-translate hint — running this step on the primary language tab
+          automatically translates it into every other configured language. */}
+      {languages && isPrimaryLanguage && AUTO_PROPAGATE_STEPS.includes(currentStep.key) && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          Running this on {languageLabel(primaryLanguage)} automatically{" "}
+          {currentStep.key === "research" ? "shares the result with" : "translates it into"}{" "}
+          the other {languages.length - 1} configured language(s) — no need to repeat this
+          step on each language tab.
+        </Alert>
+      )}
 
       {/* AI News: Research step bypass */}
       {isAiNews && currentStep.key === "research" && (

@@ -42,9 +42,12 @@ export const jobsApi = {
 
   trigger: async (
     projectId: string,
-    jobType: "translate" | "image" | "voice" | "subtitle" | "video" | "thumbnail" | "metadata"
+    jobType: "translate" | "image" | "voice" | "subtitle" | "video" | "thumbnail" | "metadata",
+    language?: string
   ): Promise<Job> => {
-    const response = await apiClient.post(`/jobs/trigger/${projectId}/${jobType}`);
+    const response = await apiClient.post(`/jobs/trigger/${projectId}/${jobType}`, null, {
+      params: language ? { language } : undefined,
+    });
     return response.data;
   },
 };

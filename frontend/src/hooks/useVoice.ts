@@ -2,15 +2,15 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { voiceApi, ProjectVoiceResponse } from "../api/voice";
 
 export const VOICE_KEYS = {
-  project: (id: string) => ["voice", "project", id] as const,
+  project: (id: string, language?: string) => ["voice", "project", id, language ?? "primary"] as const,
   narration: (id: string) => ["voice", "narration", id] as const,
   piper: () => ["voice", "piper"] as const,
 };
 
-export function useProjectVoice(projectId: string | null | undefined) {
+export function useProjectVoice(projectId: string | null | undefined, language?: string) {
   return useQuery({
-    queryKey: VOICE_KEYS.project(projectId!),
-    queryFn: () => voiceApi.listForProject(projectId!),
+    queryKey: VOICE_KEYS.project(projectId!, language),
+    queryFn: () => voiceApi.listForProject(projectId!, language),
     enabled: !!projectId,
     refetchInterval: (query) => {
       const data = query.state.data as ProjectVoiceResponse | undefined;

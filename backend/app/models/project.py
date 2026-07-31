@@ -44,6 +44,9 @@ class Project(Base):
     project_dir = Column(String(1024), nullable=True)
     description = Column(Text, nullable=True)
     language = Column(String(16), nullable=True, default="en")
+    languages = Column(JSON, nullable=False, default=lambda: ["en"])
+    language_progress = Column(JSON, nullable=False, default=lambda: {})
+    language_voices = Column(JSON, nullable=False, default=lambda: {})
     project_type = Column(String(32), nullable=False, default="deep_dive")
 
     # JSON fields for flexible state storage

@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   Box,
   Typography,
@@ -694,6 +694,13 @@ function ShortsPanel({ projectId, assetsReady }: { projectId: string; assetsRead
   );
 }
 
+const LANG_LABELS: Record<string, string> = {
+  en: "English", te: "Telugu", hi: "Hindi", ta: "Tamil", kn: "Kannada",
+  ml: "Malayalam", bn: "Bengali", mr: "Marathi", gu: "Gujarati", pa: "Punjabi",
+  fr: "French", de: "German", es: "Spanish", ja: "Japanese",
+  ko: "Korean", "zh-CN": "Chinese",
+};
+
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
@@ -703,8 +710,15 @@ export default function VideoGenPage() {
   const triggerJob = useTriggerJob();
 
   const queryClient = useQueryClient();
-  const { data: videoStatus, isLoading: statusLoading, refetch: refetchStatus } = useVideoStatus(currentProject?.id);
-  const { data: assets, isLoading: assetsLoading } = useRenderAssets(currentProject?.id);
+  const primaryLanguage = currentProject?.language || "en";
+  const languages = currentProject?.languages && currentProject.languages.length > 1
+    ? currentProject.languages
+    : null;
+  const [renderLanguage, setRenderLanguage] = useState(primaryLanguage);
+  const isPrimaryLanguage = renderLanguage === primaryLanguage;
+
+  const { data: videoStatus, isLoading: statusLoading, refetch: refetchStatus } = useVideoStatus(currentProject?.id, renderLanguage);
+  const { data: assets, isLoading: assetsLoading } = useRenderAssets(currentProject?.id, renderLanguage);
   const { data: templatesData } = useVideoTemplates();
 
   const [selectedTemplate, setSelectedTemplate] = useState("documentary");
@@ -712,6 +726,10 @@ export default function VideoGenPage() {
   const [activeTab, setActiveTab] = useState(0);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    setRenderLanguage(primaryLanguage);
+  }, [currentProject?.id, primaryLanguage]);
 
   const videoProgress = generationProgress.video;
   const isRunning = videoProgress.status === "running";
@@ -727,7 +745,11 @@ export default function VideoGenPage() {
     if (!currentProject) return;
     setIsRendering(true);
     try {
-      await triggerJob.mutateAsync({ projectId: currentProject.id, jobType: "video" });
+      await triggerJob.mutateAsync({
+        projectId: currentProject.id,
+        jobType: "video",
+        language: isPrimaryLanguage ? undefined : renderLanguage,
+      });
     } catch (err) {
       console.error("Video render failed:", err);
     } finally {
@@ -737,16 +759,17 @@ export default function VideoGenPage() {
 
   const handleDownload = () => {
     if (!currentProject) return;
-    window.location.href = videoApi.getVideoUrl(currentProject.id);
+    window.location.href = videoApi.getVideoUrl(currentProject.id, isPrimaryLanguage ? undefined : renderLanguage);
   };
 
   const handleDelete = async () => {
     if (!currentProject) return;
     setDeleting(true);
     try {
-      await videoApi.deleteOutputs(currentProject.id);
-      queryClient.invalidateQueries({ queryKey: VIDEO_KEYS.status(currentProject.id) });
-      queryClient.invalidateQueries({ queryKey: VIDEO_KEYS.assets(currentProject.id) });
+      const lang = isPrimaryLanguage ? undefined : renderLanguage;
+      await videoApi.deleteOutputs(currentProject.id, lang);
+      queryClient.invalidateQueries({ queryKey: VIDEO_KEYS.status(currentProject.id, renderLanguage) });
+      queryClient.invalidateQueries({ queryKey: VIDEO_KEYS.assets(currentProject.id, renderLanguage) });
     } catch (err) {
       console.error("Failed to delete video:", err);
     } finally {
@@ -816,6 +839,19 @@ export default function VideoGenPage() {
           </Button>
         </Box>
       </Box>
+
+      {/* Language tabs — each language renders its own video with the shared images/clips */}
+      {languages && (
+        <Tabs
+          value={renderLanguage}
+          onChange={(_, v) => setRenderLanguage(v)}
+          sx={{ mb: 2, minHeight: 36, "& .MuiTab-root": { minHeight: 36, py: 0.5 } }}
+        >
+          {languages.map((code) => (
+            <Tab key={code} value={code} label={LANG_LABELS[code] || code} />
+          ))}
+        </Tabs>
+      )}
 
       <DeleteConfirmDialog
         open={deleteOpen}

@@ -18,6 +18,7 @@ class JobType(str, PyEnum):
     METADATA = "metadata"
     WAN2 = "wan2"
     PIPELINE = "pipeline"
+    DURATION_SYNC = "duration_sync"
 
 
 class JobStatus(str, PyEnum):

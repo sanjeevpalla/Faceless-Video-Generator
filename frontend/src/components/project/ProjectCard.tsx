@@ -50,7 +50,7 @@ function getOverallProgress(progress_state: Project["progress_state"]): number {
 
 const LANG_LABELS: Record<string, string> = {
   en: "English", te: "Telugu", hi: "Hindi", ta: "Tamil", kn: "Kannada",
-  ml: "Malayalam", bn: "Bengali", mr: "Marathi", gu: "Gujarati",
+  ml: "Malayalam", bn: "Bengali", mr: "Marathi", gu: "Gujarati", pa: "Punjabi",
   fr: "French", de: "German", es: "Spanish", ja: "Japanese",
   ko: "Korean", "zh-CN": "Chinese",
 };

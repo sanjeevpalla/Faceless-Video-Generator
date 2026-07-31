@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class GeminiSettings(BaseModel):
     api_key: str = Field(default="")
-    pro_model: str = Field(default="gemini-2.5-flash")           # Steps 1-2: search grounding
+    pro_model: str = Field(default="gemini-3.5-flash")           # Steps 1-2: search grounding
     script_model: str = Field(default="gemma-4-31b-it")        # Step 3: heavy reasoning
     flash_model: str = Field(default="gemini-3.1-flash-lite")  # Steps 4-7: fast bulk text
     image_model: str = Field(default="gemini-2.5-flash-preview-image-generation") # Image generation (Gemini backend)
@@ -33,6 +33,7 @@ class PiperSettings(BaseModel):
 
 class GoogleTTSSettings(BaseModel):
     api_key: str = Field(default="")
+    language_api_keys: Dict[str, str] = Field(default_factory=dict)  # {lang_code: api_key} — dedicated key per language (own GCP project), for parallel voice synthesis. Unmapped languages fall back to api_key.
     voice_name: str = Field(default="")
     language_code: str = Field(default="")
     speaking_rate: float = Field(default=1.0, ge=0.25, le=4.0)
@@ -102,7 +103,8 @@ class AutomationSettings(BaseModel):
     deep_dive_cron: str = Field(default="0 6 * * *")
     ai_news_enabled: bool = Field(default=False)
     ai_news_cron: str = Field(default="0 7 * * *")
-    default_language: str = Field(default="en")
+    default_language: str = Field(default="en")  # legacy fallback when `languages` is empty
+    languages: List[str] = Field(default_factory=lambda: ["en"])  # multi-language projects; languages[0] is primary
 
 
 class SettingsUpdate(BaseModel):
@@ -110,6 +112,7 @@ class SettingsUpdate(BaseModel):
     piper: Optional[PiperSettings] = None
     google_tts: Optional[GoogleTTSSettings] = None
     tts_engine: Optional[str] = None      # "piper" | "google"
+    default_voices: Optional[Dict[str, str]] = None  # {lang_code: voice_id} — global per-language default
     video: Optional[VideoSettings] = None
     output: Optional[OutputSettings] = None
     gemini: Optional[GeminiSettings] = None
@@ -126,6 +129,7 @@ class SettingsResponse(BaseModel):
     piper: PiperSettings = Field(default_factory=PiperSettings)
     google_tts: GoogleTTSSettings = Field(default_factory=GoogleTTSSettings)
     tts_engine: str = "piper"
+    default_voices: Dict[str, str] = Field(default_factory=dict)
     video: VideoSettings = Field(default_factory=VideoSettings)
     output: OutputSettings = Field(default_factory=OutputSettings)
     gemini: GeminiSettings = Field(default_factory=GeminiSettings)

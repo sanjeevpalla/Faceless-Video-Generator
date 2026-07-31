@@ -36,10 +36,12 @@ export function useTriggerJob() {
     mutationFn: ({
       projectId,
       jobType,
+      language,
     }: {
       projectId: string;
       jobType: "image" | "voice" | "subtitle" | "video" | "thumbnail" | "metadata";
-    }) => jobsApi.trigger(projectId, jobType),
+      language?: string;
+    }) => jobsApi.trigger(projectId, jobType, language),
     onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({
         queryKey: JOB_KEYS.byProject(variables.projectId),

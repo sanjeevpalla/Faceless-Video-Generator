@@ -25,35 +25,37 @@ export interface WhisperStatus {
   error?: string;
 }
 
+const langQuery = (language?: string) => (language ? `?language=${encodeURIComponent(language)}` : "");
+
 export const subtitlesApi = {
-  getStatus: async (projectId: string): Promise<SubtitleStatus> => {
-    const r = await apiClient.get(`/subtitles/project/${projectId}`);
+  getStatus: async (projectId: string, language?: string): Promise<SubtitleStatus> => {
+    const r = await apiClient.get(`/subtitles/project/${projectId}${langQuery(language)}`);
     return r.data;
   },
 
-  getSegments: async (projectId: string): Promise<{ segments: SubtitleSegment[]; segment_count: number }> => {
-    const r = await apiClient.get(`/subtitles/project/${projectId}/segments`);
+  getSegments: async (projectId: string, language?: string): Promise<{ segments: SubtitleSegment[]; segment_count: number }> => {
+    const r = await apiClient.get(`/subtitles/project/${projectId}/segments${langQuery(language)}`);
     return r.data;
   },
 
-  getSrtText: async (projectId: string): Promise<string> => {
-    const r = await apiClient.get(`/subtitles/project/${projectId}/srt`);
+  getSrtText: async (projectId: string, language?: string): Promise<string> => {
+    const r = await apiClient.get(`/subtitles/project/${projectId}/srt${langQuery(language)}`);
     return r.data;
   },
 
-  getSrtDownloadUrl: (projectId: string): string =>
-    `/api/v1/subtitles/project/${projectId}/srt/download`,
+  getSrtDownloadUrl: (projectId: string, language?: string): string =>
+    `/api/v1/subtitles/project/${projectId}/srt/download${langQuery(language)}`,
 
-  getVttDownloadUrl: (projectId: string): string =>
-    `/api/v1/subtitles/project/${projectId}/vtt/download`,
+  getVttDownloadUrl: (projectId: string, language?: string): string =>
+    `/api/v1/subtitles/project/${projectId}/vtt/download${langQuery(language)}`,
 
   whisperStatus: async (): Promise<WhisperStatus> => {
     const r = await apiClient.get("/subtitles/whisper/status");
     return r.data;
   },
 
-  deleteOutputs: async (projectId: string): Promise<{ deleted_files: number; message: string }> => {
-    const r = await apiClient.delete(`/subtitles/project/${projectId}`);
+  deleteOutputs: async (projectId: string, language?: string): Promise<{ deleted_files: number; message: string }> => {
+    const r = await apiClient.delete(`/subtitles/project/${projectId}${langQuery(language)}`);
     return r.data;
   },
 };

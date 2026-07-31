@@ -39,6 +39,12 @@ if not exist "%~dp0backend\venv\Scripts\python.exe" (
     python -m venv venv
     venv\Scripts\python.exe -m pip install --upgrade pip
     venv\Scripts\python.exe -m pip install "setuptools<81"
+    :: Install CUDA-enabled torch FIRST (matches RTX 5060 Ti / Blackwell — needs
+    :: the cu128 index; plain "pip install torch" resolves to the CPU-only
+    :: wheel and silently forces Whisper subtitle generation onto the CPU).
+    :: Once this is satisfied, requirements.txt's openai-whisper->torch
+    :: dependency is already met and won't reinstall the CPU build.
+    venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cu128
     venv\Scripts\python.exe -m pip install -r requirements.txt
     popd
 )

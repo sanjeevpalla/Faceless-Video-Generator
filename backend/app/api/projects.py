@@ -8,7 +8,8 @@ import aiofiles
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_db_session, get_project_repo
+from app.core.dependencies import get_db_session, get_project_repo, get_settings_repo
+from app.repositories.settings_repo import SettingsRepository
 from app.core.exceptions import FileValidationError, ProjectNotFoundError
 from app.models.project import ProjectStatus
 from app.repositories.project_repo import ProjectRepository
@@ -112,11 +113,14 @@ async def create_project(
     for cache_sub in ["images", "audio", "subtitles", "thumbnail"]:
         (project_dir / "cache" / cache_sub).mkdir(exist_ok=True)
 
+    languages = data.languages or [data.language]
     project = await repo.create(
         name=data.name,
         description=data.description,
         project_dir=str(project_dir),
-        language=data.language,
+        language=languages[0],
+        languages=languages,
+        language_voices=data.language_voices,
         project_type=data.project_type,
     )
     # Patch the ID to use our generated one (workaround: recreate with ID)
@@ -132,6 +136,48 @@ async def get_project(
     if not project:
         raise ProjectNotFoundError(project_id)
     return ProjectResponse.model_validate(project, from_attributes=True)
+
+
+@router.get("/{project_id}/voice-preview")
+async def get_voice_preview(
+    project_id: str,
+    repo: ProjectRepository = Depends(get_project_repo),
+    settings_repo: SettingsRepository = Depends(get_settings_repo),
+):
+    """Read-only preview of which voice will be used for each of the project's
+    selected languages — does not download or generate anything."""
+    project = await repo.get_by_id(project_id)
+    if not project:
+        raise ProjectNotFoundError(project_id)
+
+    primary = project.language or "en"
+    languages = project.languages or [primary]
+    language_voices = project.language_voices or {}
+    default_voices = await settings_repo.get_by_key("tts.default_voices") or {}
+    tts_engine = await settings_repo.get_by_key("tts.engine") or "piper"
+
+    result: dict = {}
+    if tts_engine == "google":
+        from app.services.google_tts_service import language_defaults
+        gtts = await settings_repo.get_google_tts_settings()
+        for lang in languages:
+            selected = language_voices.get(lang) or default_voices.get(lang)
+            if selected:
+                voice = selected
+            else:
+                is_primary = lang == primary
+                if is_primary and gtts.voice_name:
+                    voice = gtts.voice_name
+                else:
+                    _, voice = language_defaults(lang)
+            result[lang] = {"engine": "google", "voice": voice}
+    else:
+        from app.services.piper_model_manager import voice_label
+        for lang in languages:
+            selected = language_voices.get(lang) or default_voices.get(lang)
+            result[lang] = {"engine": "piper", "voice": selected or voice_label(lang)}
+
+    return result
 
 
 @router.patch("/{project_id}", response_model=ProjectResponse)
@@ -204,6 +250,7 @@ async def duplicate_project(
         description=source.description,
         project_dir=str(new_dir),
         language=source.language or "en",
+        languages=source.languages or [source.language or "en"],
     )
     return ProjectResponse.model_validate(new_project, from_attributes=True)
 

@@ -15,13 +15,24 @@ class ProjectRepository:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    async def create(self, name: str, description: Optional[str] = None, project_dir: Optional[str] = None, language: str = "en", project_type: str = "deep_dive") -> Project:
+    async def create(
+        self,
+        name: str,
+        description: Optional[str] = None,
+        project_dir: Optional[str] = None,
+        language: str = "en",
+        languages: Optional[List[str]] = None,
+        language_voices: Optional[Dict[str, str]] = None,
+        project_type: str = "deep_dive",
+    ) -> Project:
         project = Project(
             id=str(uuid.uuid4()),
             name=name,
             description=description,
             project_dir=project_dir,
             language=language,
+            languages=languages or [language],
+            language_voices=language_voices or {},
             project_type=project_type,
             status=ProjectStatus.CREATED,
             created_at=datetime.utcnow(),
@@ -98,6 +109,18 @@ class ProjectRepository:
         current_state = dict(project.progress_state or {})
         current_state[step] = progress_data
         return await self.update(project_id, progress_state=current_state)
+
+    async def update_language_progress(
+        self, project_id: str, language: str, step: str, progress_data: Dict[str, Any]
+    ) -> Optional[Project]:
+        project = await self.get_by_id(project_id)
+        if not project:
+            return None
+        current_state = dict(project.language_progress or {})
+        lang_state = dict(current_state.get(language) or {})
+        lang_state[step] = progress_data
+        current_state[language] = lang_state
+        return await self.update(project_id, language_progress=current_state)
 
     async def update_input_files_status(
         self, project_id: str, file_type: str, file_data: Dict[str, Any]

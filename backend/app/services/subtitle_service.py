@@ -1,11 +1,26 @@
 import asyncio
 import hashlib
 import json
+import re
+import wave
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from app.services.base import BaseService
 from app.core.exceptions import ServiceError
+
+
+def _wav_duration(path: Path) -> float:
+    try:
+        with wave.open(str(path), "rb") as wf:
+            return wf.getnframes() / float(wf.getframerate())
+    except Exception:
+        return 0.0
+
+
+# Max characters per subtitle line/chunk — keeps captions readable, matching
+# roughly what Whisper itself would break a long sentence into.
+_MAX_CHUNK_CHARS = 90
 
 
 class SubtitleGenerationService(BaseService):
@@ -22,12 +37,18 @@ class SubtitleGenerationService(BaseService):
         device: str = "cpu",
         progress_callback: Optional[Callable] = None,
         settings: Optional[Any] = None,
+        audio_dir_override: Optional[Path] = None,
+        output_dir_override: Optional[Path] = None,
     ) -> None:
         super().__init__(project_id, project_dir, progress_callback, settings)
         self.whisper_model = whisper_model
         self.language = language
         self.device = device
-        self.subtitles_dir = self.get_output_dir("subtitles")
+        self.audio_dir_override = Path(audio_dir_override) if audio_dir_override else None
+        self.subtitles_dir = (
+            self.ensure_dir(Path(output_dir_override)) if output_dir_override
+            else self.get_output_dir("subtitles")
+        )
         self.cache_dir = self.get_output_dir("cache/subtitles")
         self._model = None
 
@@ -38,6 +59,30 @@ class SubtitleGenerationService(BaseService):
         audio_path = self._find_audio_file()
         if not audio_path:
             raise ServiceError(self.service_name, "No audio file found for subtitle generation")
+
+        # Prefer building subtitles directly from the known TTS narration text
+        # (scenes.json) over re-transcribing via Whisper ASR — this is exact
+        # (no ASR errors) and, for lower-resource languages Whisper handles
+        # poorly (e.g. Telugu/Tamil/Kannada/Malayalam), the only reliable
+        # option. Only falls through to Whisper when there's no per-scene
+        # audio to anchor timing to (e.g. a single uploaded narration file).
+        audio_dir = self.audio_dir_override or (self.project_dir / "audio")
+        scene_segments = self._scene_based_segments(self._scenes_json_path(), audio_dir)
+        if scene_segments is not None:
+            await self.report_progress(
+                60, f"Building subtitles from {len(scene_segments)} known narration segment(s)…"
+            )
+            srt_path = await self.export_srt(scene_segments)
+            vtt_path = await self.export_vtt(scene_segments)
+            result = {
+                "srt_path": str(srt_path),
+                "vtt_path": str(vtt_path),
+                "segment_count": len(scene_segments),
+                "source": "scene_text",
+                "segments": scene_segments,
+            }
+            await self.report_progress(100, "Subtitle generation complete (from known narration text)")
+            return result
 
         audio_hash = self._hash_audio(audio_path)
         cached = self.check_cache(audio_hash)
@@ -91,11 +136,18 @@ class SubtitleGenerationService(BaseService):
         sec_sub_dir = self.subtitles_dir / "sections" / section_label
         sec_sub_dir.mkdir(parents=True, exist_ok=True)
 
-        await self.report_progress(10, f"Loading Whisper model for section '{section_label}'…")
-        model = await self._load_model()
+        # Prefer known narration text (see generate()'s docstring comment for why)
+        # over Whisper ASR — audio_path's own directory holds this section's
+        # per-scene WAVs (audio/[lang/]sections/{label}/scene_NNN.wav).
+        segments = self._scene_based_segments(
+            self._section_scenes_json_path(section_label), audio_path.parent
+        )
+        if segments is None:
+            await self.report_progress(10, f"Loading Whisper model for section '{section_label}'…")
+            model = await self._load_model()
 
-        await self.report_progress(30, f"Transcribing section '{section_label}'…")
-        segments = await self._transcribe(model, audio_path)
+            await self.report_progress(30, f"Transcribing section '{section_label}'…")
+            segments = await self._transcribe(model, audio_path)
 
         await self.report_progress(80, "Writing subtitle files…")
 
@@ -129,8 +181,129 @@ class SubtitleGenerationService(BaseService):
             "segment_count":  len(segments),
         }
 
+    # ------------------------------------------------------------------
+    # Known-text subtitles — build directly from scenes.json narration +
+    # each scene's actual audio duration, bypassing Whisper ASR entirely.
+    # ------------------------------------------------------------------
+    def _is_primary(self) -> bool:
+        """audio_dir_override is None precisely when this is the project's
+        primary language — the same convention pipeline_service.py and
+        api/jobs.py already use when constructing this service per language."""
+        return self.audio_dir_override is None
+
+    def _scenes_json_path(self) -> Path:
+        if self._is_primary():
+            return self.project_dir / "input" / "scenes.json"
+        return self.project_dir / "input" / self.language / "scenes.json"
+
+    def _section_scenes_json_path(self, section_label: str) -> Path:
+        if self._is_primary():
+            return self.project_dir / "input" / "sections" / section_label / "scenes.json"
+        return self.project_dir / "input" / self.language / "sections" / section_label / "scenes.json"
+
+    def _scene_based_segments(
+        self, scenes_path: Path, audio_dir: Path
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Build subtitle segments straight from known narration text, timed to
+        each scene's actual generated audio duration. Returns None (meaning
+        "fall back to Whisper") when there's no per-scene audio to anchor
+        timing to — e.g. a single uploaded narration file with no scene_*.wav
+        breakdown, where we have no reliable way to know where each line of
+        text starts and ends.
+        """
+        if not scenes_path.exists():
+            return None
+        try:
+            data = json.loads(scenes_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        raw_scenes = data if isinstance(data, list) else data.get("scenes", [])
+        if not raw_scenes:
+            return None
+
+        scene_wavs = sorted(audio_dir.glob("scene_*.wav"))
+        if not scene_wavs:
+            return None
+
+        durations: Dict[int, float] = {}
+        for wav in scene_wavs:
+            try:
+                sid = int(wav.stem.split("_")[1])
+            except (IndexError, ValueError):
+                continue
+            durations[sid] = _wav_duration(wav)
+
+        segments: List[Dict[str, Any]] = []
+        t = 0.0
+        seg_id = 0
+        for i, scene in enumerate(raw_scenes):
+            raw_sid = scene.get("scene_id") if isinstance(scene, dict) else None
+            if raw_sid is None and isinstance(scene, dict):
+                raw_sid = scene.get("id")
+            try:
+                sid = int(raw_sid) if raw_sid is not None else i + 1
+            except (ValueError, TypeError):
+                sid = i + 1
+
+            dur = durations.get(sid)
+            if dur is None:
+                continue  # this scene has no generated audio yet
+
+            text = (scene.get("narration") or "").strip() if isinstance(scene, dict) else ""
+            if text:
+                for chunk_text, chunk_start, chunk_end in self._split_narration(text, t, t + dur):
+                    seg_id += 1
+                    segments.append({
+                        "id": seg_id,
+                        "start": chunk_start,
+                        "end": chunk_end,
+                        "text": chunk_text,
+                    })
+            t += dur
+
+        return segments
+
+    @staticmethod
+    def _split_narration(text: str, start: float, end: float) -> List[Tuple[str, float, float]]:
+        """Split narration text into readable caption-sized chunks, distributing
+        the scene's [start, end) duration proportionally by character count."""
+        raw_parts = re.split(r"(?<=[.!?।॥])\s+", text)
+        parts = [p.strip() for p in raw_parts if p.strip()] or [text]
+
+        chunks: List[str] = []
+        for part in parts:
+            if len(part) <= _MAX_CHUNK_CHARS:
+                chunks.append(part)
+                continue
+            words = part.split()
+            cur = ""
+            for w in words:
+                candidate = f"{cur} {w}".strip()
+                if len(candidate) <= _MAX_CHUNK_CHARS:
+                    cur = candidate
+                else:
+                    if cur:
+                        chunks.append(cur)
+                    cur = w
+            if cur:
+                chunks.append(cur)
+        if not chunks:
+            chunks = [text]
+
+        total_chars = sum(len(c) for c in chunks) or 1
+        total_dur = max(end - start, 0.01)
+
+        result: List[Tuple[str, float, float]] = []
+        t = start
+        for i, chunk in enumerate(chunks):
+            share = len(chunk) / total_chars
+            seg_end = end if i == len(chunks) - 1 else min(end, t + total_dur * share)
+            result.append((chunk, t, seg_end))
+            t = seg_end
+        return result
+
     def _find_audio_file(self) -> Optional[Path]:
-        audio_dir = self.project_dir / "audio"
+        audio_dir = self.audio_dir_override or (self.project_dir / "audio")
         for ext in ["*.wav", "*.mp3", "*.m4a", "*.ogg"]:
             files = list(audio_dir.glob(ext))
             if files:

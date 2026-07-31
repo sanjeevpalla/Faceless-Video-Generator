@@ -51,6 +51,8 @@ class ProjectCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     language: str = Field(default="en", max_length=16)
+    languages: List[str] = Field(default_factory=lambda: ["en"])
+    language_voices: Dict[str, str] = Field(default_factory=dict)
     project_type: str = Field(default="deep_dive")
 
 
@@ -59,6 +61,7 @@ class ProjectUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
     status: Optional[str] = None
+    language_voices: Optional[Dict[str, str]] = None
 
 
 class ProjectResponse(BaseModel):
@@ -68,12 +71,15 @@ class ProjectResponse(BaseModel):
     status: str
     description: Optional[str] = None
     language: str = "en"
+    languages: List[str] = Field(default_factory=lambda: ["en"])
+    language_voices: Dict[str, str] = Field(default_factory=dict)
     project_type: str = "deep_dive"
     created_at: datetime
     updated_at: datetime
     project_dir: Optional[str] = None
     input_files_status: Dict[str, Any] = Field(default_factory=dict)
     progress_state: Dict[str, Any] = Field(default_factory=dict)
+    language_progress: Dict[str, Any] = Field(default_factory=dict)
     resume_state: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -84,6 +90,7 @@ class ProjectListResponse(BaseModel):
     status: str
     description: Optional[str] = None
     language: str = "en"
+    languages: List[str] = Field(default_factory=lambda: ["en"])
     project_type: str = "deep_dive"
     created_at: datetime
     updated_at: datetime

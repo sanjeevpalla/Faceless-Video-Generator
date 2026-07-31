@@ -18,9 +18,15 @@ class MetadataService(BaseService):
         project_dir: Path,
         progress_callback: Optional[Callable] = None,
         settings: Optional[Any] = None,
+        seo_path_override: Optional[Path] = None,
+        output_dir_override: Optional[Path] = None,
     ) -> None:
         super().__init__(project_id, project_dir, progress_callback, settings)
-        self.output_dir = self.get_output_dir("output")
+        self.seo_path_override = seo_path_override
+        self.output_dir = (
+            self.ensure_dir(Path(output_dir_override)) if output_dir_override
+            else self.get_output_dir("output")
+        )
 
     async def execute(self) -> Dict[str, Any]:
         return await self.generate_metadata()
@@ -48,7 +54,7 @@ class MetadataService(BaseService):
         }
 
     async def read_seo_json(self) -> Dict[str, Any]:
-        seo_file = self.project_dir / "input" / "seo.json"
+        seo_file = self.seo_path_override or (self.project_dir / "input" / "seo.json")
         if not seo_file.exists():
             self.logger.warning("seo.json not found, using defaults")
             return {}

@@ -55,22 +55,24 @@ export interface AudioPartsResponse {
   total_duration: number;
 }
 
+const langQuery = (language?: string) => (language ? `?language=${encodeURIComponent(language)}` : "");
+
 export const voiceApi = {
-  listForProject: async (projectId: string): Promise<ProjectVoiceResponse> => {
-    const r = await apiClient.get(`/voice/project/${projectId}`);
+  listForProject: async (projectId: string, language?: string): Promise<ProjectVoiceResponse> => {
+    const r = await apiClient.get(`/voice/project/${projectId}${langQuery(language)}`);
     return r.data;
   },
 
-  getNarration: async (projectId: string): Promise<{ scenes: NarrationScene[] }> => {
-    const r = await apiClient.get(`/voice/project/${projectId}/narration`);
+  getNarration: async (projectId: string, language?: string): Promise<{ scenes: NarrationScene[] }> => {
+    const r = await apiClient.get(`/voice/project/${projectId}/narration${langQuery(language)}`);
     return r.data;
   },
 
-  getSceneAudioUrl: (projectId: string, sceneId: number): string =>
-    `/api/v1/voice/project/${projectId}/scene/${sceneId}/file`,
+  getSceneAudioUrl: (projectId: string, sceneId: number, language?: string): string =>
+    `/api/v1/voice/project/${projectId}/scene/${sceneId}/file${langQuery(language)}`,
 
-  getMergedAudioUrl: (projectId: string): string =>
-    `/api/v1/voice/project/${projectId}/merged/file`,
+  getMergedAudioUrl: (projectId: string, language?: string): string =>
+    `/api/v1/voice/project/${projectId}/merged/file${langQuery(language)}`,
 
   regenerateScene: async (
     projectId: string,
@@ -95,8 +97,13 @@ export const voiceApi = {
     return r.data;
   },
 
-  deleteOutputs: async (projectId: string): Promise<{ deleted_files: number; message: string }> => {
-    const r = await apiClient.delete(`/voice/project/${projectId}`);
+  deleteOutputs: async (projectId: string, language?: string): Promise<{ deleted_files: number; message: string }> => {
+    const r = await apiClient.delete(`/voice/project/${projectId}${langQuery(language)}`);
+    return r.data;
+  },
+
+  syncDurations: async (projectId: string): Promise<{ job_id: string; languages: string[]; status: string; message: string }> => {
+    const r = await apiClient.post(`/voice/project/${projectId}/sync-durations`);
     return r.data;
   },
 

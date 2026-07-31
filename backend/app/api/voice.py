@@ -10,7 +10,7 @@ import wave
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
 
 from app.config import get_settings
@@ -46,15 +46,30 @@ def _wav_duration(path: Path) -> float:
         return 0.0
 
 
-def _read_scenes(project_dir: Path) -> List[Dict[str, Any]]:
-    f = project_dir / "input" / "scenes.json"
-    if not f.exists():
+def _read_scenes(scenes_path: Path) -> List[Dict[str, Any]]:
+    if not scenes_path.exists():
         return []
     try:
-        _d = json.loads(f.read_text(encoding="utf-8"))
+        _d = json.loads(scenes_path.read_text(encoding="utf-8"))
         return _d if isinstance(_d, list) else _d.get("scenes", [])
     except Exception:
         return []
+
+
+def _is_primary(project, language: Optional[str]) -> bool:
+    return (language or project.language or "en") == (project.language or "en")
+
+
+def _scenes_path_for(project_dir: Path, project, language: Optional[str]) -> Path:
+    if _is_primary(project, language):
+        return project_dir / "input" / "scenes.json"
+    return project_dir / "input" / language / "scenes.json"
+
+
+def _audio_dir_for(project_dir: Path, project, language: Optional[str]) -> Path:
+    if _is_primary(project, language):
+        return project_dir / "audio"
+    return project_dir / "audio" / language
 
 
 def _scene_audio_status(audio_dir: Path, scene_id: int) -> Dict[str, Any]:
@@ -87,6 +102,7 @@ def _scene_audio_status(audio_dir: Path, scene_id: int) -> Dict[str, Any]:
 @router.get("/project/{project_id}")
 async def list_voice(
     project_id: str,
+    language: Optional[str] = Query(None),
     project_repo: ProjectRepository = Depends(get_project_repo),
 ):
     project = await project_repo.get_by_id(project_id)
@@ -94,8 +110,8 @@ async def list_voice(
         raise ProjectNotFoundError(project_id)
 
     pdir = _project_dir(project)
-    audio_dir = pdir / "audio"
-    scenes = _read_scenes(pdir)
+    audio_dir = _audio_dir_for(pdir, project, language)
+    scenes = _read_scenes(_scenes_path_for(pdir, project, language))
 
     if not scenes:
         return {"total": 0, "generated": 0, "total_duration": 0.0, "scenes": [], "merged": None}
@@ -136,13 +152,14 @@ async def list_voice(
 @router.get("/project/{project_id}/narration")
 async def get_narration(
     project_id: str,
+    language: Optional[str] = Query(None),
     project_repo: ProjectRepository = Depends(get_project_repo),
 ):
     project = await project_repo.get_by_id(project_id)
     if not project:
         raise ProjectNotFoundError(project_id)
 
-    scenes = _read_scenes(_project_dir(project))
+    scenes = _read_scenes(_scenes_path_for(_project_dir(project), project, language))
     return {
         "scenes": [
             {
@@ -163,13 +180,14 @@ async def get_narration(
 async def get_scene_audio(
     project_id: str,
     scene_id: int,
+    language: Optional[str] = Query(None),
     project_repo: ProjectRepository = Depends(get_project_repo),
 ):
     project = await project_repo.get_by_id(project_id)
     if not project:
         raise ProjectNotFoundError(project_id)
 
-    path = _project_dir(project) / "audio" / f"scene_{scene_id:03d}.wav"
+    path = _audio_dir_for(_project_dir(project), project, language) / f"scene_{scene_id:03d}.wav"
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Audio for scene {scene_id} not generated yet")
 
@@ -183,19 +201,121 @@ async def get_scene_audio(
 @router.get("/project/{project_id}/merged/file")
 async def get_merged_audio(
     project_id: str,
+    language: Optional[str] = Query(None),
     project_repo: ProjectRepository = Depends(get_project_repo),
 ):
     project = await project_repo.get_by_id(project_id)
     if not project:
         raise ProjectNotFoundError(project_id)
 
-    path = _project_dir(project) / "audio" / "narration_merged.wav"
+    path = _audio_dir_for(_project_dir(project), project, language) / "narration_merged.wav"
     if not path.exists():
         raise HTTPException(status_code=404, detail="Merged narration audio not generated yet")
 
     # Read into memory so the file handle is released immediately (avoids WinError 32 on delete)
     data = path.read_bytes()
     return Response(content=data, media_type="audio/wav")
+
+
+# ---------------------------------------------------------------------------
+# POST /voice/project/{project_id}/sync-durations
+#
+# Manual trigger for DurationSyncService, mirroring the standalone per-page
+# voice/subtitle job triggers below — this project's per-page workflow
+# (Continue/Retry per language tab) never runs PipelineService, so the
+# "duration_sync" pipeline step never fires for it. This endpoint lets a
+# multi-language project be synced on demand after generating voice for
+# every language, without running the full one-click pipeline.
+# ---------------------------------------------------------------------------
+@router.post("/project/{project_id}/sync-durations")
+async def sync_durations(
+    project_id: str,
+    job_repo: JobRepository = Depends(get_job_repo),
+    project_repo: ProjectRepository = Depends(get_project_repo),
+):
+    project = await project_repo.get_by_id(project_id)
+    if not project:
+        raise ProjectNotFoundError(project_id)
+
+    languages = list(project.languages or [project.language or "en"])
+    if len(languages) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="This project only has one language — nothing to sync",
+        )
+
+    pdir = _project_dir(project)
+
+    db_job = await job_repo.create(
+        project_id=project_id,
+        job_type=JobType.DURATION_SYNC,
+        metadata={"languages": languages},
+    )
+
+    async def progress_cb(progress: float, message: str, data: dict):
+        from app.database import get_session_factory
+        async with get_session_factory()() as _session:
+            await JobRepository(_session).update_progress(db_job.id, progress)
+            await _session.commit()
+        await connection_manager.broadcast_to_project(
+            project_id,
+            "job_progress",
+            {"job_id": db_job.id, "job_type": "duration_sync", "progress": progress, "message": message, **data},
+            job_id=db_job.id,
+        )
+
+    def make_coro():
+        from app.services.duration_sync_service import DurationSyncService
+        svc = DurationSyncService(
+            project_id=project_id,
+            project_dir=pdir,
+            languages=languages,
+            project_language=project.language or "en",
+            progress_callback=progress_cb,
+        )
+        return svc.execute()
+
+    async def on_complete(result: dict):
+        from app.database import get_session_factory
+        async with get_session_factory()() as _session:
+            await JobRepository(_session).update_status(db_job.id, JobStatus.COMPLETED)
+            await _session.commit()
+        await connection_manager.broadcast_to_project(
+            project_id,
+            "duration_sync_completed",
+            {"job_id": db_job.id, **result},
+            job_id=db_job.id,
+        )
+
+    async def on_error(exc: Exception):
+        from app.database import get_session_factory
+        async with get_session_factory()() as _session:
+            await JobRepository(_session).update_status(db_job.id, JobStatus.FAILED, error_message=str(exc))
+            await _session.commit()
+        await connection_manager.broadcast_to_project(
+            project_id,
+            "job_failed",
+            {"job_id": db_job.id, "job_type": "duration_sync", "error": str(exc)},
+            job_id=db_job.id,
+        )
+
+    queue_job = QueueJob(
+        job_id=db_job.id,
+        project_id=project_id,
+        job_type="duration_sync",
+        coroutine_factory=make_coro,
+        priority=10.0,
+        on_complete=on_complete,
+        on_error=on_error,
+    )
+    await global_queue.enqueue(queue_job)
+
+    return {
+        "job_id": db_job.id,
+        "languages": languages,
+        "status": "queued",
+        "message": f"Duration sync queued for {len(languages)} language(s)",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +334,7 @@ async def regenerate_scene_voice(
         raise ProjectNotFoundError(project_id)
 
     pdir = _project_dir(project)
-    scenes = _read_scenes(pdir)
+    scenes = _read_scenes(pdir / "input" / "scenes.json")
     scene_map = {s.get("scene_id", i + 1): s for i, s in enumerate(scenes)}
 
     if scene_id not in scene_map:

@@ -1,5 +1,6 @@
 import hashlib
 import json
+import shutil
 import textwrap
 import time
 import uuid
@@ -49,20 +50,25 @@ class ThumbnailGenerationService(BaseService):
         flux_settings: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[Callable] = None,
         settings: Optional[Any] = None,
+        prompt_path_override: Optional[Path] = None,
+        seo_path_override: Optional[Path] = None,
+        output_dir_override: Optional[Path] = None,
     ) -> None:
         super().__init__(project_id, project_dir, progress_callback, settings)
         self.comfyui_url = comfyui_url.rstrip("/")
         self.flux_settings = flux_settings or {}
-        self.thumbnail_dir = self.get_output_dir("thumbnail")
+        self.thumbnail_dir = self.ensure_dir(output_dir_override) if output_dir_override else self.get_output_dir("thumbnail")
         self.cache_dir = self.get_output_dir("cache/thumbnail")
         self.client_id = str(uuid.uuid4())
+        self.prompt_path_override = prompt_path_override
+        self.seo_path_override = seo_path_override
 
     async def execute(self) -> Dict[str, Any]:
         return await self.generate()
 
     async def generate(self) -> Dict[str, Any]:
-        thumbnail_prompt_file = self.project_dir / "input" / "thumbnail_prompt.txt"
-        seo_file = self.project_dir / "input" / "seo.json"
+        thumbnail_prompt_file = self.prompt_path_override or (self.project_dir / "input" / "thumbnail_prompt.txt")
+        seo_file = self.seo_path_override or (self.project_dir / "input" / "seo.json")
 
         prompt = ""
         if thumbnail_prompt_file.exists():
@@ -99,6 +105,7 @@ class ThumbnailGenerationService(BaseService):
         await self.report_progress(80, "Downloading thumbnail...")
         dest_path = self.thumbnail_dir / "thumbnail.png"
         await self._download_image(output_images[0], dest_path)
+        shutil.copy2(dest_path, self.thumbnail_dir / "thumbnail_raw.png")
 
         await self.report_progress(90, "Adding text overlay...")
         title = seo_data.get("title", "")
@@ -121,6 +128,31 @@ class ThumbnailGenerationService(BaseService):
 
         await self.report_progress(100, "Thumbnail generation complete")
         return result
+
+    async def generate_language_variant(self, language: str, seo_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Composite a localized title/tags overlay onto the already-rendered FLUX
+        background for a non-primary language — no new ComfyUI call."""
+        raw_path = self.thumbnail_dir / "thumbnail_raw.png"
+        if not raw_path.exists():
+            raise ServiceError(
+                self.service_name,
+                "thumbnail_raw.png not found — generate the primary thumbnail first",
+            )
+
+        lang_dir = self.get_output_dir(f"output/{language}/thumbnail")
+        dest_path = lang_dir / "thumbnail.png"
+        shutil.copy2(raw_path, dest_path)
+
+        await self.report_progress(50, f"Adding {language} text overlay...")
+        title = seo_data.get("title", "")
+        tags: List[str] = seo_data.get("tags", [])
+        if title or tags:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self._overlay_keywords, dest_path, title, tags)
+
+        await self.report_progress(100, f"{language} thumbnail complete")
+        return {"path": str(dest_path), "filename": dest_path.name, "language": language}
 
     def check_cache(self, prompt_hash: str) -> Optional[Dict[str, Any]]:
         cache_file = self.cache_dir / f"{prompt_hash}.json"

@@ -65,6 +65,9 @@ async def _apply_migrations(conn) -> None:
     for table, column, col_def in [
         ("projects", "language", "VARCHAR(16) DEFAULT 'en'"),
         ("projects", "project_type", "VARCHAR(32) DEFAULT 'deep_dive'"),
+        ("projects", "languages", "TEXT DEFAULT '[\"en\"]'"),
+        ("projects", "language_progress", "TEXT DEFAULT '{}'"),
+        ("projects", "language_voices", "TEXT DEFAULT '{}'"),
     ]:
         try:
             await conn.execute(sa.text(f"ALTER TABLE {table} ADD COLUMN {column} {col_def}"))

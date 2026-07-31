@@ -1251,17 +1251,21 @@ async def generate_section_voice(
                  "progress": 0, "message": f"Generating voice for section '{label}'…"},
             )
             tts_engine = await settings_repo.get_by_key("tts.engine") or "piper"
+            default_voices = await settings_repo.get_by_key("tts.default_voices") or {}
+            selected_voice_id = (project.language_voices or {}).get(project_language) or default_voices.get(project_language)
             if tts_engine == "google":
                 from app.services.google_tts_service import GoogleTTSService
                 gtts = await settings_repo.get_google_tts_settings()
                 if not gtts.api_key:
                     raise RuntimeError("Google TTS API key not configured — open Settings → Voice.")
+                voice_name = selected_voice_id or gtts.voice_name
+                language_code = ("-".join(selected_voice_id.split("-")[:2]) if selected_voice_id else gtts.language_code)
                 svc = GoogleTTSService(
                     project_id=project_id,
                     project_dir=project_dir,
                     api_key=gtts.api_key,
-                    voice_name=gtts.voice_name,
-                    language_code=gtts.language_code,
+                    voice_name=voice_name,
+                    language_code=language_code,
                     speaking_rate=gtts.speaking_rate,
                     project_language=project_language,
                     progress_callback=progress_cb,
@@ -1269,7 +1273,9 @@ async def generate_section_voice(
             else:
                 from app.services.voice_service import VoiceGenerationService
                 from app.services.piper_model_manager import ensure_model
-                resolved_model = await ensure_model(project_language, piper_settings.model_path, progress_cb)
+                resolved_model = await ensure_model(
+                    project_language, piper_settings.model_path, progress_cb, voice_id=selected_voice_id,
+                )
                 svc = VoiceGenerationService(
                     project_id=project_id,
                     project_dir=project_dir,
@@ -1346,6 +1352,8 @@ async def generate_missing_sections_voice(
 
         _log = logging.getLogger(__name__)
         tts_engine = await settings_repo.get_by_key("tts.engine") or "piper"
+        default_voices = await settings_repo.get_by_key("tts.default_voices") or {}
+        selected_voice_id = (project.language_voices or {}).get(project_language) or default_voices.get(project_language)
 
         # ── Google TTS: no batch API — run sequentially per section ──────────
         if tts_engine == "google":
@@ -1358,6 +1366,8 @@ async def generate_missing_sections_voice(
                      "error": "Google TTS API key not configured — open Settings → Voice."},
                 )
                 return
+            voice_name = selected_voice_id or gtts.voice_name
+            language_code = ("-".join(selected_voice_id.split("-")[:2]) if selected_voice_id else gtts.language_code)
             total = len(pending)
             for idx, label in enumerate(pending):
                 try:
@@ -1365,8 +1375,8 @@ async def generate_missing_sections_voice(
                         project_id=project_id,
                         project_dir=project_dir,
                         api_key=gtts.api_key,
-                        voice_name=gtts.voice_name,
-                        language_code=gtts.language_code,
+                        voice_name=voice_name,
+                        language_code=language_code,
                         speaking_rate=gtts.speaking_rate,
                         project_language=project_language,
                     )
@@ -1420,7 +1430,9 @@ async def generate_missing_sections_voice(
 
         # ── Phase 2: ONE Piper process for everything (fast path) ────────────
         from app.services.piper_model_manager import ensure_model
-        resolved_model = await ensure_model(project_language, piper_settings.model_path)
+        resolved_model = await ensure_model(
+            project_language, piper_settings.model_path, voice_id=selected_voice_id,
+        )
         batch_ok = False
         if all_items:
             await connection_manager.broadcast_to_project(

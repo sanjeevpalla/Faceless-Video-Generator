@@ -39,6 +39,15 @@ export function useProject(projectId: string | null | undefined) {
   }) as UseQueryResult<Project>;
 }
 
+export function useVoicePreview(projectId: string | null | undefined) {
+  return useQuery({
+    queryKey: [...PROJECT_KEYS.detail(projectId!), "voice-preview"],
+    queryFn: () => projectsApi.getVoicePreview(projectId!),
+    enabled: !!projectId,
+    staleTime: 60_000,
+  });
+}
+
 export function useCreateProject() {
   const queryClient = useQueryClient();
   const setCurrentProject = useProjectStore((s) => s.setCurrentProject);

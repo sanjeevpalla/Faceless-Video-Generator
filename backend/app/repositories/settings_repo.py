@@ -22,7 +22,7 @@ DEFAULT_SETTINGS = {
     "flux.height": 1080,
     "flux.comfyui_url": "http://127.0.0.1:8188",
     "gemini.api_key": "",
-    "gemini.pro_model": "gemini-2.5-flash",
+    "gemini.pro_model": "gemini-3.5-flash",
     "gemini.script_model": "gemma-4-31b-it",
     "gemini.flash_model": "gemini-3.1-flash-lite",
     "gemini.image_model": "gemini-3.1-flash-image",
@@ -60,7 +60,9 @@ DEFAULT_SETTINGS = {
     "whisper.language": "en",
     "whisper.device": "cuda",
     "tts.engine": "piper",
+    "tts.default_voices": {},
     "google_tts.api_key": "",
+    "google_tts.language_api_keys": {},
     "google_tts.voice_name": "",
     "google_tts.language_code": "",
     "google_tts.speaking_rate": 1.0,
@@ -80,6 +82,7 @@ DEFAULT_SETTINGS = {
     "automation.ai_news_enabled": False,
     "automation.ai_news_cron": "0 7 * * *",
     "automation.default_language": "en",
+    "automation.languages": ["en"],
 }
 
 

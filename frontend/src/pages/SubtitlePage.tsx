@@ -17,6 +17,8 @@ import {
   TextField,
   InputAdornment,
   IconButton,
+  Tabs,
+  Tab,
 } from "@mui/material";
 import {
   Subtitles as SubtitleIcon,
@@ -45,6 +47,7 @@ import { aiNewsApi } from "../api/aiNews";
 import ProgressCard from "../components/common/ProgressCard";
 import DeleteConfirmDialog from "../components/common/DeleteConfirmDialog";
 import AiNewsSectionTabs from "../components/ai-news/AiNewsSectionTabs";
+import { languageLabel } from "../constants/languages";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -251,11 +254,19 @@ export default function SubtitlePage() {
   const generationProgress = useProjectStore((s) => s.generationProgress);
   const triggerJob = useTriggerJob();
 
-  const { data: statusData, isLoading: statusLoading } = useSubtitleStatus(currentProject?.id);
-  const { data: segmentsData, isLoading: segsLoading } = useSubtitleSegments(currentProject?.id);
-  const { data: srtText, isLoading: srtLoading } = useSrtText(currentProject?.id);
-
   const isAiNews = currentProject?.project_type === "ai_news";
+  const primaryLanguage = currentProject?.language || "en";
+  const languages = currentProject?.languages && currentProject.languages.length > 1
+    ? currentProject.languages
+    : null;
+  const [activeLanguage, setActiveLanguage] = useState(primaryLanguage);
+  useEffect(() => { setActiveLanguage(primaryLanguage); }, [currentProject?.id, primaryLanguage]);
+  const isPrimaryLanguage = activeLanguage === primaryLanguage;
+
+  const { data: statusData, isLoading: statusLoading } = useSubtitleStatus(currentProject?.id, activeLanguage);
+  const { data: segmentsData, isLoading: segsLoading } = useSubtitleSegments(currentProject?.id, activeLanguage);
+  const { data: srtText, isLoading: srtLoading } = useSrtText(currentProject?.id, activeLanguage);
+
   const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState("");
   const [activeSegId, setActiveSegId] = useState<number | null>(null);
@@ -434,10 +445,11 @@ export default function SubtitlePage() {
     if (!currentProject) return;
     setDeleting(true);
     try {
-      await subtitlesApi.deleteOutputs(currentProject.id);
-      queryClient.invalidateQueries({ queryKey: SUBTITLE_KEYS.status(currentProject.id) });
-      queryClient.invalidateQueries({ queryKey: SUBTITLE_KEYS.segments(currentProject.id) });
-      queryClient.invalidateQueries({ queryKey: SUBTITLE_KEYS.srt(currentProject.id) });
+      const lang = isPrimaryLanguage ? undefined : activeLanguage;
+      await subtitlesApi.deleteOutputs(currentProject.id, lang);
+      queryClient.invalidateQueries({ queryKey: SUBTITLE_KEYS.status(currentProject.id, activeLanguage) });
+      queryClient.invalidateQueries({ queryKey: SUBTITLE_KEYS.segments(currentProject.id, activeLanguage) });
+      queryClient.invalidateQueries({ queryKey: SUBTITLE_KEYS.srt(currentProject.id, activeLanguage) });
     } catch (err) {
       console.error("Failed to delete subtitles:", err);
     } finally {
@@ -448,12 +460,12 @@ export default function SubtitlePage() {
 
   const handleDownloadSrt = () => {
     if (!currentProject) return;
-    window.location.href = subtitlesApi.getSrtDownloadUrl(currentProject.id);
+    window.location.href = subtitlesApi.getSrtDownloadUrl(currentProject.id, isPrimaryLanguage ? undefined : activeLanguage);
   };
 
   const handleDownloadVtt = () => {
     if (!currentProject) return;
-    window.location.href = subtitlesApi.getVttDownloadUrl(currentProject.id);
+    window.location.href = subtitlesApi.getVttDownloadUrl(currentProject.id, isPrimaryLanguage ? undefined : activeLanguage);
   };
 
   if (!currentProject) {
@@ -872,7 +884,11 @@ export default function SubtitlePage() {
               if (!currentProject) return;
               setIsGenerating(true);
               try {
-                await triggerJob.mutateAsync({ projectId: currentProject.id, jobType: "subtitle" });
+                await triggerJob.mutateAsync({
+                  projectId: currentProject.id,
+                  jobType: "subtitle",
+                  language: isPrimaryLanguage ? undefined : activeLanguage,
+                });
               } catch (err) {
                 console.error("Subtitle generation failed:", err);
               } finally {
@@ -886,6 +902,19 @@ export default function SubtitlePage() {
           </Button>
         </Box>
       </Box>
+
+      {/* Language tabs — subtitles are transcribed per language, each its own audio */}
+      {languages && (
+        <Tabs
+          value={activeLanguage}
+          onChange={(_, v) => setActiveLanguage(v)}
+          sx={{ mb: 2, minHeight: 36, "& .MuiTab-root": { minHeight: 36, py: 0.5 } }}
+        >
+          {languages.map((code) => (
+            <Tab key={code} value={code} label={languageLabel(code)} />
+          ))}
+        </Tabs>
+      )}
 
       <DeleteConfirmDialog
         open={deleteOpen}

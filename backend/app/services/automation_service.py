@@ -55,10 +55,12 @@ async def _create_and_start(project_type: str, label: str) -> str:
         for cache_sub in ["images", "audio", "subtitles", "thumbnail"]:
             (project_dir / "cache" / cache_sub).mkdir(exist_ok=True)
 
+        languages = automation.languages or [automation.default_language]
         project = await project_repo.create(
             name=name,
             project_dir=str(project_dir),
-            language=automation.default_language,
+            language=languages[0],
+            languages=languages,
             project_type=project_type,
         )
         await sess.commit()

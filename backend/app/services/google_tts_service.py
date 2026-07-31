@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 _GTTS_URL = "https://texttospeech.googleapis.com/v1/text:synthesize"
+_GTTS_VOICES_URL = "https://texttospeech.googleapis.com/v1/voices"
 
 # ISO 639-1 → (languageCode, voice_name) defaults
 _LANG_DEFAULTS: Dict[str, tuple] = {
@@ -32,6 +33,8 @@ _LANG_DEFAULTS: Dict[str, tuple] = {
     "kn":  ("kn-IN", "kn-IN-Wavenet-A"),
     "mr":  ("mr-IN", "mr-IN-Wavenet-A"),
     "bn":  ("bn-IN", "bn-IN-Wavenet-A"),
+    "gu":  ("gu-IN", "gu-IN-Standard-A"),
+    "pa":  ("pa-IN", "pa-IN-Wavenet-A"),
     "de":  ("de-DE", "de-DE-Neural2-A"),
     "fr":  ("fr-FR", "fr-FR-Neural2-A"),
     "es":  ("es-ES", "es-ES-Neural2-A"),
@@ -51,6 +54,41 @@ def language_defaults(lang: str) -> tuple:
     return _LANG_DEFAULTS.get(key, _LANG_DEFAULTS["en"])
 
 
+def _fetch_voices_sync(api_key: str) -> List[Dict[str, Any]]:
+    req = urllib.request.Request(f"{_GTTS_VOICES_URL}?key={api_key}")
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read()).get("voices", [])
+
+
+async def fetch_voice_catalog(api_key: str, language: str) -> List[Dict[str, Any]]:
+    """Google Cloud TTS voices available for `language`, for a UI picker.
+    Returns an empty list (not an error) if no API key is configured or the
+    request fails, so callers can show a friendly "configure an API key" state."""
+    if not api_key:
+        return []
+    key = language.lower().split("_")[0].split("-")[0]
+    loop = asyncio.get_event_loop()
+    try:
+        voices = await loop.run_in_executor(None, _fetch_voices_sync, api_key)
+    except Exception as exc:
+        logger.warning("Could not fetch Google TTS voice catalog: %s", exc)
+        return []
+
+    catalog: List[Dict[str, Any]] = []
+    for v in voices:
+        codes = v.get("languageCodes") or []
+        if not any(c.lower().split("-")[0] == key for c in codes):
+            continue
+        catalog.append({
+            "id": v.get("name"),
+            "label": v.get("name"),
+            "gender": v.get("ssmlGender", ""),
+            "language_code": codes[0] if codes else "",
+        })
+    catalog.sort(key=lambda v: str(v["id"]))
+    return catalog
+
+
 class GoogleTTSService:
     """Generate narration WAV files using the Google Cloud TTS REST API."""
 
@@ -66,13 +104,16 @@ class GoogleTTSService:
         speaking_rate: float = 1.0,
         project_language: str = "en",
         progress_callback: Optional[Callable] = None,
+        scenes_path_override: Optional[Path] = None,
+        output_dir_override: Optional[Path] = None,
     ) -> None:
         self.project_id = project_id
         self.project_dir = project_dir
         self.api_key = api_key
         self.speaking_rate = speaking_rate
         self._progress_cb = progress_callback
-        self.audio_dir = project_dir / "audio"
+        self.scenes_path_override = scenes_path_override
+        self.audio_dir = Path(output_dir_override) if output_dir_override else (project_dir / "audio")
         self.audio_dir.mkdir(parents=True, exist_ok=True)
 
         # Fall back to language defaults when not explicitly set in settings
@@ -210,7 +251,7 @@ class GoogleTTSService:
 
     async def execute(self) -> Dict[str, Any]:
         """Generate narration for a standard Deep Dive project (input/scenes.json)."""
-        scenes_path = self.project_dir / "input" / "scenes.json"
+        scenes_path = self.scenes_path_override or (self.project_dir / "input" / "scenes.json")
         if not scenes_path.exists():
             raise FileNotFoundError("input/scenes.json not found")
 

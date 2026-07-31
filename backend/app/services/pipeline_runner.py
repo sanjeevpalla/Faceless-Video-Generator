@@ -43,6 +43,7 @@ async def enqueue_pipeline_job(
     whisper_model = await settings_repo.get_by_key("whisper.model") or "base"
     whisper_device = await settings_repo.get_by_key("whisper.device") or "cpu"
     tts_engine    = await settings_repo.get_by_key("tts.engine") or "piper"
+    default_voices = await settings_repo.get_by_key("tts.default_voices") or {}
     channel_name  = (await settings_repo.get_by_key("channel.name")) or "Deep Dive AI"
 
     google_tts_cfg = None
@@ -94,6 +95,7 @@ async def enqueue_pipeline_job(
 
         google_proxy = type("GT", (), {
             "api_key":       getattr(google_tts_cfg, "api_key", ""),
+            "language_api_keys": dict(getattr(google_tts_cfg, "language_api_keys", {}) or {}),
             "voice_name":    getattr(google_tts_cfg, "voice_name", "en-US-Neural2-D"),
             "language_code": getattr(google_tts_cfg, "language_code", "en-US"),
             "speaking_rate": getattr(google_tts_cfg, "speaking_rate", 1.0),
@@ -115,6 +117,7 @@ async def enqueue_pipeline_job(
             channel_name=channel_name,
             comfyui_url=comfyui_url,
             progress_callback=progress_cb,
+            default_voices=dict(default_voices),
         )
         return svc.execute()
 

@@ -29,6 +29,7 @@ export interface PiperSettings {
 
 export interface GoogleTTSSettings {
   api_key: string;
+  language_api_keys: Record<string, string>; // {lang_code: api_key} — dedicated key per language, for parallel voice synthesis
   voice_name: string;
   language_code: string;
   speaking_rate: number;
@@ -99,6 +100,7 @@ export interface AutomationSettings {
   ai_news_enabled: boolean;
   ai_news_cron: string;
   default_language: string;
+  languages: string[];
 }
 
 export interface AppSettings {
@@ -106,6 +108,7 @@ export interface AppSettings {
   piper: PiperSettings;
   google_tts: GoogleTTSSettings;
   tts_engine: string;
+  default_voices: Record<string, string>;
   video: VideoSettings;
   output: OutputSettings;
   gemini: GeminiSettings;
@@ -122,6 +125,7 @@ export interface SettingsUpdate {
   piper?: Partial<PiperSettings>;
   google_tts?: Partial<GoogleTTSSettings>;
   tts_engine?: string;
+  default_voices?: Record<string, string>;
   video?: Partial<VideoSettings>;
   output?: Partial<OutputSettings>;
   gemini?: Partial<GeminiSettings>;
@@ -138,6 +142,20 @@ export interface GeminiImageModel {
   display_name: string;
   methods: string[];
   image_capable: boolean;
+}
+
+export interface PiperVoiceOption {
+  id: string;
+  label: string;
+  quality: string;
+  region: string;
+}
+
+export interface GoogleVoiceOption {
+  id: string;
+  label: string;
+  gender: string;
+  language_code: string;
 }
 
 export const settingsApi = {
@@ -159,6 +177,16 @@ export const settingsApi = {
   listGeminiImageModels: async (): Promise<{ models: GeminiImageModel[]; all_count: number }> => {
     const response = await apiClient.get("/settings/gemini/image-models");
     return response.data;
+  },
+
+  getPiperVoices: async (language: string): Promise<PiperVoiceOption[]> => {
+    const response = await apiClient.get("/settings/voices/piper", { params: { language } });
+    return response.data.voices;
+  },
+
+  getGoogleVoices: async (language: string): Promise<GoogleVoiceOption[]> => {
+    const response = await apiClient.get("/settings/voices/google", { params: { language } });
+    return response.data.voices;
   },
 };
 

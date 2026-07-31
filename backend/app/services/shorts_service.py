@@ -1153,11 +1153,17 @@ class AiNewsClipService:
     def __init__(
         self, project_id: str, project_dir: Path,
         language: str = "en", channel_name: str = "Deep Dive AI",
+        audio_dir_override: Optional[Path] = None,
+        subtitles_dir_override: Optional[Path] = None,
+        output_dir_override: Optional[Path] = None,
     ) -> None:
         self.project_id = project_id
         self.project_dir = project_dir
         self.language = language
         self.channel_name = channel_name
+        self.audio_dir_override = Path(audio_dir_override) if audio_dir_override else None
+        self.subtitles_dir_override = Path(subtitles_dir_override) if subtitles_dir_override else None
+        self.output_dir_override = Path(output_dir_override) if output_dir_override else None
 
     async def regenerate_section_clip(
         self,
@@ -1168,9 +1174,13 @@ class AiNewsClipService:
         if section_label == "agenda":
             return await self._regenerate_agenda_clip()
 
-        images_dir = self.project_dir / "images"    / "sections" / section_label
-        audio_path = self.project_dir / "audio"     / "sections" / section_label / "narration.wav"
-        srt_path   = self.project_dir / "subtitles" / "sections" / section_label / "subtitles.srt"
+        audio_dir     = self.audio_dir_override or (self.project_dir / "audio")
+        subtitles_dir = self.subtitles_dir_override or (self.project_dir / "subtitles")
+        output_dir    = self.output_dir_override or (self.project_dir / "output")
+
+        images_dir = self.project_dir / "images" / "sections" / section_label
+        audio_path = audio_dir     / "sections" / section_label / "narration.wav"
+        srt_path   = subtitles_dir / "sections" / section_label / "subtitles.srt"
 
         if not audio_path.exists():
             raise RuntimeError(
@@ -1190,7 +1200,7 @@ class AiNewsClipService:
         stdout, _ = await proc.communicate()
         duration = float(json.loads(stdout)["format"]["duration"])
 
-        out_dir = self.project_dir / "output" / "clips_ai_news"
+        out_dir = output_dir / "clips_ai_news"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"{section_label}.mp4"
 
@@ -1213,7 +1223,10 @@ class AiNewsClipService:
             except Exception:
                 pass
 
-        out_dir = self.project_dir / "output" / "clips_ai_news"
+        # Agenda story titles are always read from the primary-language script.md —
+        # the title card is a visual summary, not narrated, so it isn't part of the
+        # per-language translation pass.
+        out_dir = (self.output_dir_override or (self.project_dir / "output")) / "clips_ai_news"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / "agenda.mp4"
 

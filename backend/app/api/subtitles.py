@@ -31,6 +31,11 @@ def _project_dir(project) -> Path:
     return Path(project.project_dir) if project.project_dir else (settings.PROJECTS_DIR / project.id)
 
 
+def _subs_dir_for(project_dir: Path, project, language: Optional[str]) -> Path:
+    primary = (language or project.language or "en") == (project.language or "en")
+    return project_dir / "subtitles" if primary else project_dir / "subtitles" / language
+
+
 def _parse_srt(srt_text: str) -> List[Dict[str, Any]]:
     """Parse SRT content into a list of segment dicts."""
     segments = []
@@ -76,6 +81,7 @@ def _srt_to_vtt(srt_text: str) -> str:
 @router.get("/project/{project_id}")
 async def get_subtitle_status(
     project_id: str,
+    language: Optional[str] = Query(None),
     project_repo: ProjectRepository = Depends(get_project_repo),
 ):
     project = await project_repo.get_by_id(project_id)
@@ -83,7 +89,7 @@ async def get_subtitle_status(
         raise ProjectNotFoundError(project_id)
 
     pdir = _project_dir(project)
-    subs_dir = pdir / "subtitles"
+    subs_dir = _subs_dir_for(pdir, project, language)
     srt_path = subs_dir / "subtitles.srt"
     vtt_path = subs_dir / "subtitles.vtt"
 
@@ -114,13 +120,14 @@ async def get_subtitle_status(
 @router.get("/project/{project_id}/segments")
 async def get_segments(
     project_id: str,
+    language: Optional[str] = Query(None),
     project_repo: ProjectRepository = Depends(get_project_repo),
 ):
     project = await project_repo.get_by_id(project_id)
     if not project:
         raise ProjectNotFoundError(project_id)
 
-    srt_path = _project_dir(project) / "subtitles" / "subtitles.srt"
+    srt_path = _subs_dir_for(_project_dir(project), project, language) / "subtitles.srt"
     if not srt_path.exists():
         return {"segments": [], "segment_count": 0}
 
@@ -135,13 +142,14 @@ async def get_segments(
 @router.get("/project/{project_id}/srt")
 async def get_srt(
     project_id: str,
+    language: Optional[str] = Query(None),
     project_repo: ProjectRepository = Depends(get_project_repo),
 ):
     project = await project_repo.get_by_id(project_id)
     if not project:
         raise ProjectNotFoundError(project_id)
 
-    path = _project_dir(project) / "subtitles" / "subtitles.srt"
+    path = _subs_dir_for(_project_dir(project), project, language) / "subtitles.srt"
     if not path.exists():
         raise HTTPException(status_code=404, detail="SRT file not generated yet")
 
@@ -154,20 +162,22 @@ async def get_srt(
 @router.get("/project/{project_id}/srt/download")
 async def download_srt(
     project_id: str,
+    language: Optional[str] = Query(None),
     project_repo: ProjectRepository = Depends(get_project_repo),
 ):
     project = await project_repo.get_by_id(project_id)
     if not project:
         raise ProjectNotFoundError(project_id)
 
-    path = _project_dir(project) / "subtitles" / "subtitles.srt"
+    path = _subs_dir_for(_project_dir(project), project, language) / "subtitles.srt"
     if not path.exists():
         raise HTTPException(status_code=404, detail="SRT file not generated yet")
 
+    suffix = f"_{language}" if language and language != (project.language or "en") else ""
     return FileResponse(
         str(path),
         media_type="application/x-subrip",
-        filename=f"{project.name}_subtitles.srt",
+        filename=f"{project.name}{suffix}_subtitles.srt",
     )
 
 
@@ -177,27 +187,29 @@ async def download_srt(
 @router.get("/project/{project_id}/vtt/download")
 async def download_vtt(
     project_id: str,
+    language: Optional[str] = Query(None),
     project_repo: ProjectRepository = Depends(get_project_repo),
 ):
     project = await project_repo.get_by_id(project_id)
     if not project:
         raise ProjectNotFoundError(project_id)
 
-    pdir = _project_dir(project)
-    vtt_path = pdir / "subtitles" / "subtitles.vtt"
+    subs_dir = _subs_dir_for(_project_dir(project), project, language)
+    vtt_path = subs_dir / "subtitles.vtt"
 
     # Generate VTT on the fly from SRT if needed
     if not vtt_path.exists():
-        srt_path = pdir / "subtitles" / "subtitles.srt"
+        srt_path = subs_dir / "subtitles.srt"
         if not srt_path.exists():
             raise HTTPException(status_code=404, detail="Subtitle files not generated yet")
         vtt_content = _srt_to_vtt(srt_path.read_text(encoding="utf-8"))
         vtt_path.write_text(vtt_content, encoding="utf-8")
 
+    suffix = f"_{language}" if language and language != (project.language or "en") else ""
     return FileResponse(
         str(vtt_path),
         media_type="text/vtt",
-        filename=f"{project.name}_subtitles.vtt",
+        filename=f"{project.name}{suffix}_subtitles.vtt",
     )
 
 
@@ -238,6 +250,7 @@ async def whisper_status(
 @router.delete("/project/{project_id}")
 async def delete_subtitles(
     project_id: str,
+    language: Optional[str] = Query(None),
     project_repo: ProjectRepository = Depends(get_project_repo),
 ):
     project = await project_repo.get_by_id(project_id)
@@ -246,8 +259,10 @@ async def delete_subtitles(
 
     pdir = _project_dir(project)
     deleted = 0
+    is_primary = (language or project.language or "en") == (project.language or "en")
+    folders = [_subs_dir_for(pdir, project, language)] + ([pdir / "cache" / "subtitles"] if is_primary else [])
 
-    for folder in [pdir / "subtitles", pdir / "cache" / "subtitles"]:
+    for folder in folders:
         if folder.exists():
             for f in folder.iterdir():
                 if f.is_file():

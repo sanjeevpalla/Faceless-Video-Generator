@@ -19,6 +19,8 @@ import {
   CircularProgress,
   Divider,
   Collapse,
+  Tabs,
+  Tab,
 } from "@mui/material";
 import {
   RecordVoiceOver as VoiceIcon,
@@ -40,17 +42,21 @@ import {
   DragIndicator as DragIcon,
   ExpandMore as ExpandMoreIcon,
   ExpandLess as ExpandLessIcon,
+  FileDownload as DownloadIcon,
+  SyncAlt as SyncIcon,
 } from "@mui/icons-material";
 import { useProjectStore } from "../store";
 import { useTriggerJob } from "../hooks/useJobs";
 import { useProjectVoice, usePiperStatus, useRegenerateSceneVoice, VOICE_KEYS } from "../hooks/useVoice";
 import { voiceApi, SceneAudioInfo, AudioPart } from "../api/voice";
+import { jobsApi } from "../api/jobs";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { aiNewsApi } from "../api/aiNews";
 import ProgressCard from "../components/common/ProgressCard";
 import StatusBadge from "../components/common/StatusBadge";
 import DeleteConfirmDialog from "../components/common/DeleteConfirmDialog";
 import AiNewsSectionTabs from "../components/ai-news/AiNewsSectionTabs";
+import { languageLabel } from "../constants/languages";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -162,15 +168,16 @@ function AudioPlayer({ src, isPlaying, onPlay, onPause, duration }: AudioPlayerP
 interface SceneRowProps {
   scene: SceneAudioInfo;
   projectId: string;
+  language?: string;
   isPlaying: boolean;
   isRegenerating: boolean;
   onPlay: () => void;
   onPause: () => void;
-  onRegenerate: () => void;
+  onRegenerate?: () => void;
 }
 
-function SceneRow({ scene, projectId, isPlaying, isRegenerating, onPlay, onPause, onRegenerate }: SceneRowProps) {
-  const audioUrl = voiceApi.getSceneAudioUrl(projectId, scene.scene_id);
+function SceneRow({ scene, projectId, language, isPlaying, isRegenerating, onPlay, onPause, onRegenerate }: SceneRowProps) {
+  const audioUrl = voiceApi.getSceneAudioUrl(projectId, scene.scene_id, language);
 
   return (
     <ListItem
@@ -245,20 +252,22 @@ function SceneRow({ scene, projectId, isPlaying, isRegenerating, onPlay, onPause
       </Box>
 
       {/* Actions */}
-      <Box sx={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", display: "flex", gap: 0.5 }}>
-        <Tooltip title="Regenerate">
-          <span>
-            <IconButton
-              size="small"
-              onClick={onRegenerate}
-              disabled={isRegenerating}
-              sx={{ color: "text.secondary" }}
-            >
-              {isRegenerating ? <CircularProgress size={14} /> : <RegenerateIcon fontSize="small" />}
-            </IconButton>
-          </span>
-        </Tooltip>
-      </Box>
+      {onRegenerate && (
+        <Box sx={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", display: "flex", gap: 0.5 }}>
+          <Tooltip title="Regenerate">
+            <span>
+              <IconButton
+                size="small"
+                onClick={onRegenerate}
+                disabled={isRegenerating}
+                sx={{ color: "text.secondary" }}
+              >
+                {isRegenerating ? <CircularProgress size={14} /> : <RegenerateIcon fontSize="small" />}
+              </IconButton>
+            </span>
+          </Tooltip>
+        </Box>
+      )}
     </ListItem>
   );
 }
@@ -592,7 +601,14 @@ export default function VoiceGenPage() {
 
   const isAiNews = currentProject?.project_type === "ai_news";
   const queryClient = useQueryClient();
-  const { data: voiceData, isLoading } = useProjectVoice(currentProject?.id);
+  const primaryLanguage = currentProject?.language || "en";
+  const languages = currentProject?.languages && currentProject.languages.length > 1
+    ? currentProject.languages
+    : null;
+  const [activeLanguage, setActiveLanguage] = useState(primaryLanguage);
+  useEffect(() => { setActiveLanguage(primaryLanguage); }, [currentProject?.id, primaryLanguage]);
+  const isPrimaryLanguage = activeLanguage === primaryLanguage;
+  const { data: voiceData, isLoading } = useProjectVoice(currentProject?.id, activeLanguage);
   const [playingSceneId, setPlayingSceneId] = useState<number | null>(null);
   const [regeneratingIds, setRegeneratingIds] = useState<Set<number>>(new Set());
   const mergedAudioRef = useRef<HTMLAudioElement>(null);
@@ -601,6 +617,42 @@ export default function VoiceGenPage() {
   const [deleting, setDeleting] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const uploadInputRef = useRef<HTMLInputElement>(null);
+
+  // ── Cross-language duration sync (pads shorter languages' narration with
+  // trailing silence so every language ends up the same total length — needed
+  // when only one language's video is uploaded and the rest are attached to
+  // it as alternate YouTube audio tracks + caption tracks). ──────────────────
+  const [syncJobId, setSyncJobId] = useState<string | null>(null);
+  const syncJobQuery = useQuery({
+    queryKey: ["duration-sync-job", syncJobId],
+    queryFn: () => jobsApi.get(syncJobId!),
+    enabled: !!syncJobId,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "completed" || status === "failed" ? false : 1500;
+    },
+  });
+  const syncStatus = syncJobQuery.data?.status;
+  useEffect(() => {
+    if (syncStatus === "completed" && currentProject) {
+      (languages ?? [primaryLanguage]).forEach((lang) => {
+        queryClient.invalidateQueries({
+          queryKey: VOICE_KEYS.project(currentProject.id, lang === primaryLanguage ? undefined : lang),
+        });
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncStatus]);
+
+  const handleSyncDurations = async () => {
+    if (!currentProject) return;
+    try {
+      const res = await voiceApi.syncDurations(currentProject.id);
+      setSyncJobId(res.job_id);
+    } catch (err) {
+      console.error("Duration sync trigger failed:", err);
+    }
+  };
 
   const [sectionLabel, setSectionLabel] = useState<string | null>(null);
   const [playingSectionAudio, setPlayingSectionAudio] = useState<string | null>(null);
@@ -634,7 +686,11 @@ export default function VoiceGenPage() {
   const handleGenerateAll = async () => {
     if (!currentProject) return;
     try {
-      await triggerJob.mutateAsync({ projectId: currentProject.id, jobType: "voice" });
+      await triggerJob.mutateAsync({
+        projectId: currentProject.id,
+        jobType: "voice",
+        language: isPrimaryLanguage ? undefined : activeLanguage,
+      });
     } catch (err) {
       console.error("Voice generation failed:", err);
     }
@@ -659,8 +715,8 @@ export default function VoiceGenPage() {
     if (!currentProject) return;
     setDeleting(true);
     try {
-      await voiceApi.deleteOutputs(currentProject.id);
-      queryClient.invalidateQueries({ queryKey: VOICE_KEYS.project(currentProject.id) });
+      await voiceApi.deleteOutputs(currentProject.id, isPrimaryLanguage ? undefined : activeLanguage);
+      queryClient.invalidateQueries({ queryKey: VOICE_KEYS.project(currentProject.id, activeLanguage) });
       setPlayingSceneId(null);
       setMergedPlaying(false);
     } catch (err) {
@@ -839,7 +895,7 @@ export default function VoiceGenPage() {
     );
   }
 
-  const mergedAudioUrl = voiceApi.getMergedAudioUrl(currentProject.id);
+  const mergedAudioUrl = voiceApi.getMergedAudioUrl(currentProject.id, isPrimaryLanguage ? undefined : activeLanguage);
 
   // ── AI News layout ──────────────────────────────────────────────────────────
   if (isAiNews) {
@@ -1230,6 +1286,29 @@ export default function VoiceGenPage() {
           </Box>
         </Box>
         <Box sx={{ display: "flex", gap: 1.5 }}>
+          {languages && (
+            <Tooltip title="Pad every language's narration with trailing silence so they all end up the same total length — use this after generating voice for every language, before uploading them as alternate YouTube audio tracks">
+              <span>
+                <Button
+                  variant="outlined"
+                  startIcon={
+                    syncStatus === "running" || syncStatus === "pending"
+                      ? <CircularProgress size={16} color="inherit" />
+                      : <SyncIcon />
+                  }
+                  onClick={handleSyncDurations}
+                  disabled={syncStatus === "running" || syncStatus === "pending"}
+                  size="large"
+                >
+                  {syncStatus === "running" || syncStatus === "pending"
+                    ? "Syncing…"
+                    : syncStatus === "completed"
+                    ? "Synced ✓"
+                    : "Sync Durations"}
+                </Button>
+              </span>
+            </Tooltip>
+          )}
           {generated > 0 && (
             <Button
               variant="outlined"
@@ -1242,22 +1321,26 @@ export default function VoiceGenPage() {
               Delete All
             </Button>
           )}
-          <Button
-            variant="outlined"
-            startIcon={isUploading ? <CircularProgress size={16} color="inherit" /> : <UploadIcon />}
-            onClick={() => uploadInputRef.current?.click()}
-            disabled={isRunning || isUploading}
-            size="large"
-          >
-            {isUploading ? "Uploading…" : "Upload"}
-          </Button>
-          <input
-            ref={uploadInputRef}
-            type="file"
-            accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.aac"
-            style={{ display: "none" }}
-            onChange={handleUploadSelect}
-          />
+          {isPrimaryLanguage && (
+            <>
+              <Button
+                variant="outlined"
+                startIcon={isUploading ? <CircularProgress size={16} color="inherit" /> : <UploadIcon />}
+                onClick={() => uploadInputRef.current?.click()}
+                disabled={isRunning || isUploading}
+                size="large"
+              >
+                {isUploading ? "Uploading…" : "Upload"}
+              </Button>
+              <input
+                ref={uploadInputRef}
+                type="file"
+                accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.aac"
+                style={{ display: "none" }}
+                onChange={handleUploadSelect}
+              />
+            </>
+          )}
           <Button
             variant="contained"
             startIcon={isRunning ? <CircularProgress size={16} color="inherit" /> : <VoiceIcon />}
@@ -1269,6 +1352,19 @@ export default function VoiceGenPage() {
           </Button>
         </Box>
       </Box>
+
+      {/* Language tabs — voice is generated per language, each its own TTS call */}
+      {languages && (
+        <Tabs
+          value={activeLanguage}
+          onChange={(_, v) => setActiveLanguage(v)}
+          sx={{ mb: 2, minHeight: 36, "& .MuiTab-root": { minHeight: 36, py: 0.5 } }}
+        >
+          {languages.map((code) => (
+            <Tab key={code} value={code} label={languageLabel(code)} />
+          ))}
+        </Tabs>
+      )}
 
       <DeleteConfirmDialog
         open={deleteOpen}
@@ -1333,11 +1429,13 @@ export default function VoiceGenPage() {
         </Alert>
       )}
 
-      {/* Multi-part upload panel */}
-      <MultiPartUploader
-        projectId={currentProject.id}
-        onMerged={() => queryClient.invalidateQueries({ queryKey: VOICE_KEYS.project(currentProject.id) })}
-      />
+      {/* Multi-part upload panel (primary language only) */}
+      {isPrimaryLanguage && (
+        <MultiPartUploader
+          projectId={currentProject.id}
+          onMerged={() => queryClient.invalidateQueries({ queryKey: VOICE_KEYS.project(currentProject.id, activeLanguage) })}
+        />
+      )}
 
       <Grid container spacing={3}>
         {/* Left: scene list */}
@@ -1367,11 +1465,12 @@ export default function VoiceGenPage() {
                       key={scene.scene_id}
                       scene={scene}
                       projectId={currentProject.id}
+                      language={isPrimaryLanguage ? undefined : activeLanguage}
                       isPlaying={playingSceneId === scene.scene_id}
                       isRegenerating={regeneratingIds.has(scene.scene_id)}
                       onPlay={() => { setMergedPlaying(false); setPlayingSceneId(scene.scene_id); }}
                       onPause={() => setPlayingSceneId(null)}
-                      onRegenerate={() => handleRegenerate(scene)}
+                      onRegenerate={isPrimaryLanguage ? () => handleRegenerate(scene) : undefined}
                     />
                   ))}
                 </List>
@@ -1392,10 +1491,19 @@ export default function VoiceGenPage() {
                     <Typography variant="caption" color="text.secondary">{formatDuration(voiceData.merged.duration)}</Typography>
                   </Box>
                   <audio ref={mergedAudioRef} src={mergedAudioUrl} onEnded={() => setMergedPlaying(false)} preload="metadata" />
-                  <Button fullWidth variant="outlined" color="success" size="small"
-                    startIcon={mergedPlaying ? <PauseIcon /> : <PlayIcon />} onClick={toggleMergedPlay}>
-                    {mergedPlaying ? "Pause Narration" : "Play Full Narration"}
-                  </Button>
+                  <Box sx={{ display: "flex", gap: 1 }}>
+                    <Button fullWidth variant="outlined" color="success" size="small"
+                      startIcon={mergedPlaying ? <PauseIcon /> : <PlayIcon />} onClick={toggleMergedPlay}>
+                      {mergedPlaying ? "Pause" : "Play"}
+                    </Button>
+                    <Tooltip title="Download this language's merged narration WAV — use it as the alternate audio track for this language in YouTube Studio">
+                      <Button variant="outlined" color="success" size="small"
+                        startIcon={<DownloadIcon />}
+                        onClick={() => { window.location.href = mergedAudioUrl; }}>
+                        Download
+                      </Button>
+                    </Tooltip>
+                  </Box>
                 </Box>
               </CardContent>
             </Card>

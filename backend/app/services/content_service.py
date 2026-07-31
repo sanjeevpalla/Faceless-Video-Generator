@@ -2,8 +2,8 @@
 ContentGenerationService — auto-generates all 5 project input files via Gemini API.
 
 Pipeline:
-  Step 1: Trend Discovery        (pro_model   — gemini-2.5-flash + Google Search)
-  Step 2: Research + Fact Check  (pro_model   — gemini-2.5-flash + Google Search)
+  Step 1: Trend Discovery        (pro_model   — gemini-3.5-flash + Google Search)
+  Step 2: Research + Fact Check  (pro_model   — gemini-3.5-flash + Google Search)
   Step 3: Script Generation      (script_model — gemma-4-31b-it, heavy reasoning)
   Step 4: Scenes JSON            (script_model — gemma-4-31b-it, large JSON array)
   Step 5: Image Prompts          (flash_model  — gemini-3.1-flash-lite, plain text)
@@ -22,6 +22,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from app.core.exceptions import ServiceError
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -340,6 +341,88 @@ IMPORTANT: Description should include keywords naturally, be professional, inclu
 Return valid JSON only."""
 
 
+_TRANSLATE_SCENES_PROMPT = """You are a professional documentary translator.
+
+Translate ONLY the "title" and "narration" fields of each scene below into {language_name}.
+Do not translate or modify any other field. Do not add, remove, reorder, or merge scenes —
+the output must have exactly the same number of items in the same order, since each scene
+is tied to an already-generated image.
+
+SCENES (JSON array, {count} items):
+{scenes_json}
+
+OUTPUT FORMAT:
+Return a JSON array of exactly {count} objects, one per input scene, in the SAME order, each shaped:
+[{{"scene_id": <same scene_id as input>, "title": "<translated title>", "narration": "<translated narration>"}}]
+
+Return valid JSON only — no markdown code blocks, no commentary."""
+
+
+_COMPOSE_SCENES_PROMPT = """You are a professional documentary scriptwriter, native in {language_name}.
+
+Below is a fixed sequence of visual scenes for a documentary, and the complete {language_name}
+script already written for this same documentary. Write natural, fluent {language_name} narration
+for EACH scene — drawing its wording, tone, and pacing from the {language_name} script below,
+matching that script wherever it covers the same content — rather than translating the reference
+English narration word-for-word. The English narration in each scene is provided only as a
+factual/positional reference so you know which part of the story that scene covers.
+
+Do not add, remove, reorder, or merge scenes — the output must have exactly the same number of
+items in the same order, since each scene is tied to an already-generated image.
+
+{language_name} SCRIPT (use this for wording, tone, and pacing):
+{script}
+
+SCENES (JSON array, {count} items — "narration_en" is factual reference only, do not translate it literally):
+{scenes_json}
+
+OUTPUT FORMAT:
+Return a JSON array of exactly {count} objects, one per input scene, in the SAME order, each shaped:
+[{{"scene_id": <same scene_id as input>, "title": "<{language_name} title>", "narration": "<{language_name} narration>"}}]
+
+Return valid JSON only — no markdown code blocks, no commentary."""
+
+
+_TRANSLATE_SCRIPT_PROMPT = """You are a professional documentary translator.
+
+Translate the narration text in the script below into {language_name}. Preserve every
+structural element EXACTLY as-is and in the same order: Markdown headers, section labels,
+`[NARRATOR]` / `[VISUAL]` tags, timestamps, and blank lines. Only the human-readable narration
+sentences inside `[NARRATOR]` blocks (and any prose outside tagged blocks) should be translated.
+`[VISUAL]` block contents must stay in English exactly as written — they drive image generation.
+
+SCRIPT:
+{script}
+
+Return ONLY the translated script text in the same structure — no commentary, no code fences."""
+
+
+_TRANSLATE_THUMBNAIL_PROMPT = """You are a professional documentary translator.
+
+Below is a YouTube thumbnail concept. Translate ONLY the THUMBNAIL_TITLE, THUMBNAIL_TEXT, and
+THUMBNAIL_CONCEPT lines into {language_name}. Leave the THUMBNAIL_PROMPT line and every other
+line exactly as-is (unchanged, verbatim, same language) — it drives image generation and is not
+re-rendered per language.
+
+THUMBNAIL CONCEPT:
+{thumbnail_full}
+
+Return ONLY the full text block in the same line structure — no commentary, no code fences."""
+
+
+_TRANSLATE_SEO_PROMPT = """You are a professional YouTube localization specialist.
+
+Translate the human-readable fields of the SEO metadata JSON below into {language_name}:
+"title", "alternate_titles", "description", "tags", "hashtags", "chapters" (titles only —
+leave any timestamps inside chapter entries unchanged), and "keywords". Leave "search_intent"
+and "ctr_estimate" as-is. Preserve the exact JSON structure, key names, and array lengths.
+
+SEO JSON:
+{seo_json}
+
+Return valid JSON only — no markdown code blocks, no commentary."""
+
+
 _TREND_CANDIDATES_PROMPT = """You are an expert AI industry analyst and YouTube growth strategist
 scouting topics for the "{channel}" channel.
 
@@ -367,16 +450,18 @@ class ContentGenerationService:
         "gu": "Gujarati",  "fr": "French",   "de": "German",   "es": "Spanish",
         "ja": "Japanese",  "ko": "Korean",   "zh": "Chinese (Simplified)",
         "ar": "Arabic",    "pt": "Portuguese","it": "Italian",  "ru": "Russian",
-        "ur": "Urdu",
+        "ur": "Urdu",      "pa": "Punjabi",
     }
 
     # When a model returns 503 after all retries, automatically fall back to this model.
     # Fallback chain — triggered when a model returns 503 after all retries.
     _MODEL_FALLBACKS: Dict[str, str] = {
-        "gemini-2.5-flash":      "gemini-3.1-flash-lite",
-        "gemini-2.5-pro":        "gemini-2.5-flash",
+        "gemini-3.5-flash":      "gemini-3.1-flash-lite",
+        "gemini-2.5-flash":      "gemini-3.5-flash",
+        "gemini-2.5-pro":        "gemini-3.5-flash",
         "gemma-4-31b-it":        "gemini-3.1-flash-lite",
         "gemini-3.1-flash-lite": "gemma-4-31b-it",
+        "gemini-3-flash-preview": "gemini-3.5-flash",
     }
 
     def __init__(
@@ -384,7 +469,7 @@ class ContentGenerationService:
         project_id: str,
         project_dir: Path,
         api_key: str,
-        pro_model: str = "gemini-2.5-flash",
+        pro_model: str = "gemini-3.5-flash",
         script_model: str = "gemma-4-31b-it",
         flash_model: str = "gemini-3.1-flash-lite",
         search_grounding: bool = True,
@@ -499,7 +584,7 @@ class ContentGenerationService:
                 if finish == "MALFORMED_FUNCTION_CALL":
                     raise RuntimeError(
                         f"{model_name} keeps generating malformed function calls. "
-                        "Switch to a stable model such as gemini-2.5-flash in Settings → Gemini AI."
+                        "Switch to a stable model such as gemini-3.5-flash in Settings → Gemini AI."
                     )
                 raise RuntimeError(
                     f"Gemini returned empty text for {model_name} (finish_reason: {finish}). "
@@ -513,6 +598,28 @@ class ContentGenerationService:
             is_quota       = "429" in err or "RESOURCE_EXHAUSTED" in err.upper() or "ResourceExhausted" in type(e).__name__
             is_unavailable = "503" in err or "UNAVAILABLE" in err.upper() or "ServiceUnavailable" in type(e).__name__
             is_internal    = "500" in err or "INTERNAL" in err.upper() or "InternalServerError" in type(e).__name__
+            # 404 "no longer available to new users" — some API keys/projects lose access to
+            # older models before others (e.g. a freshly-created per-language project key).
+            # Retrying won't help; jump straight to the fallback chain.
+            is_deprecated  = "404" in err and "NOT_FOUND" in err.upper() and "no longer available" in err.lower()
+            # Some models (e.g. Gemma family) reject the thinking_config param entirely —
+            # a hard capability mismatch, not a transient error. Retry once without it.
+            is_no_thinking = "400" in err and "thinking budget is not supported" in err.lower()
+            if is_no_thinking and thinking_budget is not None:
+                self.logger.warning("%s does not support thinking_budget — retrying without it", model_name)
+                return await self._call(prompt, model_name=model_name, with_search=with_search, thinking_budget=None, _attempt=_attempt)
+            if is_deprecated:
+                fallback = self._MODEL_FALLBACKS.get(model_name)
+                if fallback:
+                    self.logger.warning(
+                        "%s is no longer available for this API key — switching to fallback %s",
+                        model_name, fallback,
+                    )
+                    return await self._call(prompt, model_name=fallback, with_search=with_search, thinking_budget=thinking_budget, _attempt=0)
+                raise RuntimeError(
+                    f"{model_name} is no longer available for this API key, and no fallback model "
+                    "is configured. Update the model in Settings → Gemini AI."
+                ) from e
             if is_quota:
                 if "PerDay" in err or "per_day" in err.lower():
                     quota_m = re.search(r"quota_value:\s*(\d+)", err)
@@ -528,6 +635,14 @@ class ContentGenerationService:
                     self.logger.warning("Rate limited on %s — retrying in %ds (attempt %d/3)", model_name, wait, _attempt + 1)
                     await asyncio.sleep(wait)
                     return await self._call(prompt, model_name=model_name, with_search=with_search, thinking_budget=thinking_budget, _attempt=_attempt + 1)
+                fallback = self._MODEL_FALLBACKS.get(model_name)
+                if fallback:
+                    self.logger.warning("Rate limit persists on %s after 3 retries — switching to fallback %s", model_name, fallback)
+                    return await self._call(prompt, model_name=fallback, with_search=with_search, thinking_budget=thinking_budget, _attempt=0)
+                raise RuntimeError(
+                    f"{model_name} is rate-limited and no fallback model is available. "
+                    "Please wait a few minutes and try again, or check this API key's quota in Google Cloud Console."
+                ) from e
             if (is_unavailable or is_internal) and _attempt < 3:
                 wait = 15 * (2 ** _attempt)  # 15s, 30s, 60s
                 code = "500 INTERNAL" if is_internal else "503 UNAVAILABLE"
@@ -700,8 +815,10 @@ class ContentGenerationService:
         prompt = _RESEARCH_PROMPT.format(topic=topic)
         if not self._is_english():
             prompt += (
-                f"\n\nNote: This dossier will be used for a {self._lang_name()}-language documentary. "
-                "You may write the research in English for accuracy and completeness."
+                f"\n\nLANGUAGE REQUIREMENT: Write this ENTIRE research dossier in {self._lang_name()} — "
+                "every section, fact, and summary. Follow the same section structure and level of "
+                "detail as specified above, but compose it natively in this language rather than "
+                "translating from English."
             )
         result = await self._call(prompt, model_name=self.pro_model, with_search=True)
         (self.input_dir / "research.txt").write_text(result, encoding="utf-8")
@@ -737,7 +854,7 @@ class ContentGenerationService:
                 "The 'visual_description' field MUST remain in English (it is used for image generation). "
                 "Do not write English narration."
             )
-        # Use pro_model (gemini-2.5-flash) with thinking disabled — much faster than script_model
+        # Use pro_model (gemini-3.5-flash) with thinking disabled — much faster than script_model
         # for pure JSON generation; flash-lite is still too unreliable for 100-120 objects.
         raw = await self._call(
             prompt,
@@ -788,7 +905,9 @@ class ContentGenerationService:
             prompt += (
                 f"\n\nLANGUAGE REQUIREMENT: "
                 f"Write THUMBNAIL_TITLE, THUMBNAIL_TEXT, and THUMBNAIL_CONCEPT in {self._lang_name()}. "
-                "The THUMBNAIL_PROMPT field MUST remain in English (used for FLUX image generation)."
+                "THUMBNAIL_PROMPT should also reflect a visual concept independently suited to this "
+                "language's audience (it may stay in English wording since it drives FLUX image "
+                "generation, but its concept/subject need not match any other language's thumbnail)."
             )
         raw = await self._call(prompt, model_name=self.flash_model)
         prompt_line = self._extract_thumbnail_prompt(raw)
@@ -799,17 +918,25 @@ class ContentGenerationService:
 
     # ── Step 7: SEO ───────────────────────────────────────────────────────────
 
-    async def generate_seo(self, script: str) -> str:
+    async def generate_seo(self, script: str, localize_metadata: bool = False) -> str:
         await self._report(5, "Generating SEO metadata…", "seo")
         prompt = _SEO_PROMPT.format(script=script[:4000], channel=self.channel_name)
         if not self._is_english():
-            prompt += (
-                "\n\nLANGUAGE REQUIREMENT: Even though the video narration is in "
-                f"{self._lang_name()}, generate ALL YouTube metadata (title, alternate_titles, "
-                "description, tags, hashtags, chapters, and keywords) in ENGLISH — optimise for "
-                "English-language YouTube search regardless of the narration language. "
-                "Return valid JSON only."
-            )
+            if localize_metadata:
+                prompt += (
+                    f"\n\nLANGUAGE REQUIREMENT: Generate ALL YouTube metadata (title, "
+                    f"alternate_titles, description, tags, hashtags, chapters, and keywords) in "
+                    f"{self._lang_name()} — optimise for {self._lang_name()}-language YouTube "
+                    "search. Return valid JSON only."
+                )
+            else:
+                prompt += (
+                    "\n\nLANGUAGE REQUIREMENT: Even though the video narration is in "
+                    f"{self._lang_name()}, generate ALL YouTube metadata (title, alternate_titles, "
+                    "description, tags, hashtags, chapters, and keywords) in ENGLISH — optimise for "
+                    "English-language YouTube search regardless of the narration language. "
+                    "Return valid JSON only."
+                )
         # JSON output — same reason as scenes: use larger model for reliable structure
         raw = await self._call(prompt, model_name=self.script_model)
         json_text = self._extract_json(raw)
@@ -873,3 +1000,181 @@ class ContentGenerationService:
             self.progress_callback = cb  # always restore
 
         return results
+
+    # ── Language variants ─────────────────────────────────────────────────────
+
+    async def translate_scenes_narration(
+        self, base_scenes: List[Dict[str, Any]], target_language: str,
+    ) -> List[Dict[str, Any]]:
+        """Translate only the narration/title of each scene into target_language,
+        preserving scene_id/duration/image_file/visual_description verbatim so the
+        already-generated images stay in sync across every language variant."""
+        lang_name = self._LANGUAGE_NAMES.get(target_language, target_language.upper())
+        compact = [
+            {"scene_id": s.get("scene_id"), "title": s.get("title", ""), "narration": s.get("narration", "")}
+            for s in base_scenes
+        ]
+        prompt = _TRANSLATE_SCENES_PROMPT.format(
+            language_name=lang_name,
+            count=len(compact),
+            scenes_json=json.dumps(compact, ensure_ascii=False),
+        )
+        raw = await self._call(prompt, model_name=self.script_model, thinking_budget=0)
+        json_text = self._extract_json(raw)
+        try:
+            translated = json.loads(json_text)
+        except json.JSONDecodeError:
+            repaired = self._repair_json_array(json_text)
+            if not repaired:
+                raise ServiceError("content", f"Scene translation to {lang_name} did not return valid JSON")
+            translated = json.loads(repaired)
+
+        by_id = {t.get("scene_id"): t for t in translated if isinstance(t, dict)}
+        if len(translated) != len(base_scenes) or any(s.get("scene_id") not in by_id for s in base_scenes):
+            raise ServiceError(
+                "content",
+                f"Scene translation to {lang_name} returned {len(translated)} items, "
+                f"expected {len(base_scenes)} matching the original scene_ids",
+            )
+
+        merged: List[Dict[str, Any]] = []
+        for s in base_scenes:
+            t = by_id[s.get("scene_id")]
+            merged_scene = dict(s)
+            merged_scene["title"] = t.get("title", s.get("title", ""))
+            merged_scene["narration"] = t.get("narration", s.get("narration", ""))
+            merged.append(merged_scene)
+        return merged
+
+    async def compose_scenes_narration(
+        self, base_scenes: List[Dict[str, Any]], target_language: str, target_script: str,
+    ) -> List[Dict[str, Any]]:
+        """Compose fresh title/narration per scene in target_language, grounded in that
+        language's own already-generated script (not a literal translation of the English
+        narration) — preserving scene_id/duration/image_file/visual_description verbatim
+        so the shared, already-generated images stay valid across every language."""
+        lang_name = self._LANGUAGE_NAMES.get(target_language, target_language.upper())
+        compact = [
+            {"scene_id": s.get("scene_id"), "title": s.get("title", ""), "narration_en": s.get("narration", "")}
+            for s in base_scenes
+        ]
+        prompt = _COMPOSE_SCENES_PROMPT.format(
+            language_name=lang_name,
+            script=target_script[:8000],
+            count=len(compact),
+            scenes_json=json.dumps(compact, ensure_ascii=False),
+        )
+        raw = await self._call(prompt, model_name=self.script_model, thinking_budget=0)
+        json_text = self._extract_json(raw)
+        try:
+            composed = json.loads(json_text)
+        except json.JSONDecodeError:
+            repaired = self._repair_json_array(json_text)
+            if not repaired:
+                raise ServiceError("content", f"Scene composition in {lang_name} did not return valid JSON")
+            composed = json.loads(repaired)
+
+        by_id = {c.get("scene_id"): c for c in composed if isinstance(c, dict)}
+        if len(composed) != len(base_scenes) or any(s.get("scene_id") not in by_id for s in base_scenes):
+            raise ServiceError(
+                "content",
+                f"Scene composition in {lang_name} returned {len(composed)} items, "
+                f"expected {len(base_scenes)} matching the original scene_ids",
+            )
+
+        merged: List[Dict[str, Any]] = []
+        for s in base_scenes:
+            c = by_id[s.get("scene_id")]
+            merged_scene = dict(s)
+            merged_scene["title"] = c.get("title", s.get("title", ""))
+            merged_scene["narration"] = c.get("narration", s.get("narration", ""))
+            merged.append(merged_scene)
+        return merged
+
+    async def translate_script(self, base_script: str, target_language: str) -> str:
+        """Translate an already-generated script's narration into target_language,
+        preserving structure ([NARRATOR]/[VISUAL] tags, headers, ordering) verbatim
+        so it works for both the Deep Dive documentary script and the AI News
+        multi-section anchor script."""
+        lang_name = self._LANGUAGE_NAMES.get(target_language, target_language.upper())
+        prompt = _TRANSLATE_SCRIPT_PROMPT.format(language_name=lang_name, script=base_script)
+        text = await self._call(prompt, model_name=self.script_model)
+        (self.input_dir / "script.md").write_text(text, encoding="utf-8")
+        return text
+
+    async def translate_thumbnail_concept(self, base_thumbnail_full: str, target_language: str) -> str:
+        """Translate an already-generated thumbnail concept's title/text/concept lines
+        into target_language. THUMBNAIL_PROMPT (the FLUX visual prompt) is carried over
+        verbatim since the image itself is reused, not re-rendered, per language."""
+        lang_name = self._LANGUAGE_NAMES.get(target_language, target_language.upper())
+        prompt = _TRANSLATE_THUMBNAIL_PROMPT.format(
+            language_name=lang_name, thumbnail_full=base_thumbnail_full,
+        )
+        raw = await self._call(prompt, model_name=self.flash_model)
+        prompt_line = self._extract_thumbnail_prompt(raw)
+        (self.input_dir / "thumbnail_prompt.txt").write_text(prompt_line, encoding="utf-8")
+        (self.input_dir / "thumbnail_full.txt").write_text(raw, encoding="utf-8")
+        return raw
+
+    async def translate_seo(self, base_seo_json: str, target_language: str) -> str:
+        """Translate an already-generated SEO metadata JSON's human-readable fields
+        into target_language, preserving JSON structure/key names/array lengths."""
+        lang_name = self._LANGUAGE_NAMES.get(target_language, target_language.upper())
+        prompt = _TRANSLATE_SEO_PROMPT.format(language_name=lang_name, seo_json=base_seo_json)
+        raw = await self._call(prompt, model_name=self.script_model)
+        json_text = self._extract_json(raw)
+        try:
+            json.loads(json_text)
+            (self.input_dir / "seo.json").write_text(json_text, encoding="utf-8")
+        except json.JSONDecodeError:
+            self.logger.warning("SEO translation JSON parse failed — saving raw text")
+            (self.input_dir / "seo.json").write_text(raw, encoding="utf-8")
+        return raw
+
+    async def translate_language_variant(
+        self, language: str, base_scenes: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Translate the primary language's already-generated script/scenes/thumbnail/
+        seo into `language` — no independent research or content generation, and no
+        extra Gemini API key needed since every language now shares one key. Only the
+        scene skeleton (scene_id/duration/image_file/visual_description) is reused
+        verbatim from the primary language, so the shared FLUX images stay valid."""
+        variant_dir = self.input_dir / language
+        variant_dir.mkdir(parents=True, exist_ok=True)
+
+        primary_dir = self.project_dir / "input"
+        base_script = (primary_dir / "script.md").read_text(encoding="utf-8")
+        base_thumbnail_full = (primary_dir / "thumbnail_full.txt").read_text(encoding="utf-8")
+        base_seo_json = (primary_dir / "seo.json").read_text(encoding="utf-8")
+
+        variant = ContentGenerationService(
+            project_id=self.project_id,
+            project_dir=self.project_dir,
+            api_key=self.api_key,
+            pro_model=self.pro_model,
+            script_model=self.script_model,
+            flash_model=self.flash_model,
+            search_grounding=self.search_grounding,
+            image_backend=self.image_backend,
+            language=language,
+            channel_name=self.channel_name,
+        )
+        variant.input_dir = variant_dir
+        lang_name = variant._lang_name()
+
+        await self._report(10, f"Translating script into {lang_name}…", "language_variant")
+        script = await variant.translate_script(base_script, language)
+
+        await self._report(40, f"Translating scene narration into {lang_name}…", "language_variant")
+        scenes = await variant.translate_scenes_narration(base_scenes, language)
+        scenes_json = json.dumps(scenes, indent=2, ensure_ascii=False)
+        (variant_dir / "scenes.json").write_text(scenes_json, encoding="utf-8")
+
+        await self._report(70, f"Translating {lang_name} thumbnail concept…", "language_variant")
+        await variant.translate_thumbnail_concept(base_thumbnail_full, language)
+
+        await self._report(90, f"Translating {lang_name} SEO metadata…", "language_variant")
+        seo_raw = await variant.translate_seo(base_seo_json, language)
+
+        await self._report(100, f"{lang_name} variant complete", "language_variant")
+        return {"language": language, "script": script, "scenes": scenes_json, "seo": seo_raw}

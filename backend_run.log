@@ -1,0 +1,30 @@
+INFO:     Started server process [23152]
+INFO:     Waiting for application startup.
+[32m[2026-07-14 17:27:33] [INFO    ] app.main: Starting Faceless Video Generator v1.0.0[0m
+[32m[2026-07-14 17:27:33] [INFO    ] app.main: Database: D:\dev\Faceless-Video-Generator\database\faceless.db[0m
+[32m[2026-07-14 17:27:33] [INFO    ] app.main: Projects dir: D:\dev\Faceless-Video-Generator\projects[0m
+[32m[2026-07-14 17:27:33] [INFO    ] app.main: ComfyUI URL: http://127.0.0.1:8188[0m
+[32m[2026-07-14 17:27:33] [INFO    ] app.main: Database initialized (WAL mode)[0m
+[32m[2026-07-14 17:27:33] [INFO    ] app.repositories.settings_repo: Settings defaults initialized.[0m
+[32m[2026-07-14 17:27:33] [INFO    ] app.main: Settings defaults loaded[0m
+[32m[2026-07-14 17:27:33] [INFO    ] app.workers.queue_manager: QueueManager starting with max_concurrent=1[0m
+[32m[2026-07-14 17:27:33] [INFO    ] app.main: Queue manager started[0m
+[32m[2026-07-14 17:27:33] [INFO    ] apscheduler.scheduler: Scheduler started[0m
+[32m[2026-07-14 17:27:33] [INFO    ] app.workers.queue_manager: Worker 0 started[0m
+[32m[2026-07-14 17:27:33] [INFO    ] app.workers.scheduler: Automation schedule applied: deep_dive_enabled=False (0 6 * * *), ai_news_enabled=False (0 7 * * *)[0m
+[32m[2026-07-14 17:27:33] [INFO    ] app.workers.scheduler: Automation scheduler started[0m
+[32m[2026-07-14 17:27:33] [INFO    ] app.main: Server ready at http://127.0.0.1:8000[0m
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+[32m[2026-07-14 17:27:46] [INFO    ] google_genai.models: AFC is enabled with max remote calls: 10.[0m
+[32m[2026-07-14 17:27:47] [INFO    ] httpx: HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemma-4-31b-it:generateContent "HTTP/1.1 400 Bad Request"[0m
+[33m[2026-07-14 17:27:47] [WARNING ] app.services.content_service: gemma-4-31b-it does not support thinking_budget — retrying without it[0m
+[32m[2026-07-14 17:27:47] [INFO    ] google_genai.models: AFC is enabled with max remote calls: 10.[0m
+[32m[2026-07-14 17:27:48] [INFO    ] httpx: HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemma-4-31b-it:generateContent "HTTP/1.1 429 Too Many Requests"[0m
+[33m[2026-07-14 17:27:48] [WARNING ] app.services.content_service: Rate limited on gemma-4-31b-it — retrying in 30s (attempt 1/3)[0m
+[32m[2026-07-14 17:28:18] [INFO    ] google_genai.models: AFC is enabled with max remote calls: 10.[0m
+[32m[2026-07-14 17:32:40] [INFO    ] httpx: HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemma-4-31b-it:generateContent "HTTP/1.1 200 OK"[0m
+[32m[2026-07-14 17:33:36] [INFO    ] google_genai.models: AFC is enabled with max remote calls: 10.[0m
+[32m[2026-07-14 17:33:36] [INFO    ] google_genai.models: AFC is enabled with max remote calls: 10.[0m
+[32m[2026-07-14 17:33:38] [INFO    ] httpx: HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent "HTTP/1.1 200 OK"[0m
+[32m[2026-07-14 17:34:28] [INFO    ] httpx: HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemma-4-31b-it:generateContent "HTTP/1.1 200 OK"[0m

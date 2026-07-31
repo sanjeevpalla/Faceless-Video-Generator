@@ -2,16 +2,16 @@ import { useQuery } from "@tanstack/react-query";
 import { videoApi, VideoStatus } from "../api/video";
 
 export const VIDEO_KEYS = {
-  status: (id: string) => ["video", "status", id] as const,
-  assets: (id: string) => ["video", "assets", id] as const,
+  status: (id: string, language?: string) => ["video", "status", id, language ?? "primary"] as const,
+  assets: (id: string, language?: string) => ["video", "assets", id, language ?? "primary"] as const,
   ffmpeg: () => ["video", "ffmpeg"] as const,
   templates: () => ["video", "templates"] as const,
 };
 
-export function useVideoStatus(projectId: string | null | undefined) {
+export function useVideoStatus(projectId: string | null | undefined, language?: string) {
   return useQuery({
-    queryKey: VIDEO_KEYS.status(projectId!),
-    queryFn: () => videoApi.getStatus(projectId!),
+    queryKey: VIDEO_KEYS.status(projectId!, language),
+    queryFn: () => videoApi.getStatus(projectId!, language),
     enabled: !!projectId,
     refetchInterval: (query) => {
       const data = query.state.data as VideoStatus | undefined;
@@ -21,10 +21,10 @@ export function useVideoStatus(projectId: string | null | undefined) {
   });
 }
 
-export function useRenderAssets(projectId: string | null | undefined) {
+export function useRenderAssets(projectId: string | null | undefined, language?: string) {
   return useQuery({
-    queryKey: VIDEO_KEYS.assets(projectId!),
-    queryFn: () => videoApi.getAssets(projectId!),
+    queryKey: VIDEO_KEYS.assets(projectId!, language),
+    queryFn: () => videoApi.getAssets(projectId!, language),
     enabled: !!projectId,
     staleTime: 10_000,
     refetchInterval: 10_000,

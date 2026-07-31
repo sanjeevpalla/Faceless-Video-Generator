@@ -34,19 +34,25 @@ class VoiceGenerationService(BaseService):
         speed: float = 1.0,
         progress_callback: Optional[Callable] = None,
         settings: Optional[Any] = None,
+        scenes_path_override: Optional[Path] = None,
+        output_dir_override: Optional[Path] = None,
     ) -> None:
         super().__init__(project_id, project_dir, progress_callback, settings)
         self.piper_executable = piper_executable
         self.model_path = model_path
         self.speed = speed
-        self.audio_dir = self.get_output_dir("audio")
+        self.scenes_path_override = scenes_path_override
+        self.audio_dir = (
+            self.ensure_dir(Path(output_dir_override)) if output_dir_override
+            else self.get_output_dir("audio")
+        )
         self.cache_dir = self.get_output_dir("cache/audio")
 
     async def execute(self) -> Dict[str, Any]:
         return await self.generate_all()
 
     async def generate_all(self) -> Dict[str, Any]:
-        scenes_file = self.project_dir / "input" / "scenes.json"
+        scenes_file = self.scenes_path_override or (self.project_dir / "input" / "scenes.json")
         if not scenes_file.exists():
             raise ServiceError(self.service_name, "scenes.json not found in project input directory")
 
